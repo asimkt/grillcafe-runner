@@ -30,15 +30,16 @@ particles, drawing, UI screens, admin, input, loop.
 - Coupons valid 7 days. Coupon codes look like `GRILL-XXXX`.
 
 ## Status (23 Nov 2026)
-- Game: built and playtested (owner reached 10,000 in about 10 minutes, which led to the prize levels and harder bands).
-- Mock mode: fully working, tested headless through all three prize levels.
-- Server code: written and syntax-checked, **not yet run against a real Neon database**. First task: deploy to a Vercel preview and test every endpoint.
+- Live at https://grillcafe-runner.vercel.app. Server code is tested (80 tests, see README) and deployed with Neon.
+- `index.html` is the marketing page (Calicut Shawarma Month, 1 Dec to 1 Jan, top score by 31 Dec 9 PM wins). The game is `play.html`.
+- Leaderboard (today + overall, names and scores only), security hardening, audit log and admin Security panel are done.
+- The production database currently holds real test plays (e.g. "Asim KT"). Clear them before launch only with the owner's say-so.
 
 ## Open items
-1. Deploy and test the server (see README).
-2. OTP phone verification before issuing the device token (`api/register.js`). Without it, one person can use many numbers.
-3. Terms page: one prize per person per level, validity, the cafe may void suspicious wins, campaign end date.
-4. Launch checklist: real admin PIN, clear test data, QR codes for tables, staff briefing on redeeming codes in admin.
+1. OTP phone verification before issuing the device token (`api/register.js`). The takeover block is a stop-gap.
+2. Terms page: the rules on the landing page are a draft, to be reviewed by the owner.
+3. Launch checklist: new admin PIN, clear test data (`TRUNCATE runs, sessions, coupons, daily_awards, players, security_events CASCADE;` on the `grillcafe` main branch only), table QR codes (`/?t=<table>`), staff briefing on redeeming codes in admin.
+4. Decide coupon validity: tier coupons currently last 7 days from the win (admin setting).
 5. Optional: retune difficulty after more playtests (speed caps in `speedCap()`, row gaps in `spawnRow()`).
 
 ## Testing tip

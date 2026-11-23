@@ -1,0 +1,7 @@
+# Not part of the public site. Everything else in this folder is served as a static file.
+HANDOFF.md
+README.md
+schema.sql
+game-test-mode.html
+test
+.env*

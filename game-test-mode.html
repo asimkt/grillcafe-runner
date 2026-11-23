@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23521510'/%3E%3Ctext x='50' y='70' font-size='62' text-anchor='middle'%3E%F0%9F%8C%AF%3C/text%3E%3C/svg%3E">
 <title>Shawarma Thief – The Grill Cafe</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -130,6 +132,18 @@ form input{display:block;width:100%;margin-top:4px;font:500 16px 'Outfit',system
 .tag.on{background:rgba(46,125,50,.16);color:var(--ok);}
 .tag.off{background:var(--line);color:var(--muted);}
 .tag.warn{background:rgba(198,40,40,.14);color:var(--bad);}
+.tabs{display:flex;gap:8px;justify-content:center;margin:0 0 12px;}
+.tabs button{font:700 14px 'Outfit',system-ui,sans-serif;border-radius:999px;border:1px solid var(--line);background:var(--panel-2);color:var(--ink);padding:7px 18px;cursor:pointer;}
+.tabs button.on{background:var(--btn);color:var(--btn-ink);border-color:var(--btn);}
+.board{list-style:none;padding:0;margin:0 0 10px;text-align:left;}
+.board li{display:flex;align-items:center;gap:10px;background:var(--panel-2);border-radius:14px;padding:9px 12px;margin-bottom:6px;}
+.board .rk{min-width:28px;text-align:center;font-weight:800;}
+.board .nm{flex:1;min-width:0;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.board .pt{font-weight:800;font-variant-numeric:tabular-nums;}
+.board li.me{outline:2px solid var(--gold);}
+.live{font-size:12px;color:var(--muted);margin:0 0 10px;}
+.live i{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;animation:pulse 1.6s infinite;}
+@keyframes pulse{50%{opacity:.25;}}
 .spin{display:inline-block;width:22px;height:22px;border:3px solid var(--line);border-top-color:var(--ink);border-radius:50%;animation:sp .8s linear infinite;margin:8px auto;}
 @keyframes sp{to{transform:rotate(360deg)}}
 
@@ -217,6 +231,7 @@ const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
 /* ================= campaign rules (shared by mock and server) ================= */
 const DBKEY = 'grillcafe-mock-v3', DAY = 86400000;
 const dayKey = ts => { const d = new Date(ts); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
+const cutoffMs = g => { const [y, m, d] = g.endsAt.split('-').map(Number); return new Date(y, m - 1, d, g.endsHour == null ? 21 : g.endsHour, 0, 0).getTime(); };
 const endOfDay = key => { const [y, m, d] = key.split('-').map(Number); return new Date(y, m - 1, d, 23, 59, 59).getTime(); };
 const CODECH = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const mkCode = () => { let s = 'GRILL-'; for (let i = 0; i < 4; i++) s += CODECH[Math.floor(Math.random() * CODECH.length)]; return s; };
@@ -224,7 +239,7 @@ const RULES = { maxPtsPerSec: 48 };
 function defaultCampaign() {
   return {
     tiers: [{ points: 10000, slots: 20, prize: 'Free shawarma' }, { points: 20000, slots: 10, prize: '₹200 off' }, { points: 30000, slots: 5, prize: '₹500 off' }],
-    grand: { prize: '₹2,000 off', endsAt: dayKey(Date.now() + 30 * DAY) },
+    grand: { prize: '₹2,000 off', endsAt: dayKey(Date.now() + 30 * DAY), endsHour: 21 },
     daily: { on: false, prize: '₹1,000 off' },
     sceneLen: 1000, safeZone: 500, validDays: 7
   };
@@ -238,7 +253,7 @@ function cleanCampaign(c) {
   const g = c.grand || {}, dl = c.daily || {};
   return {
     tiers: tiers.length ? tiers : d.tiers,
-    grand: { prize: txt(g.prize, d.grand.prize), endsAt: /^\d{4}-\d{2}-\d{2}$/.test(g.endsAt || '') ? g.endsAt : d.grand.endsAt },
+    grand: { prize: txt(g.prize, d.grand.prize), endsAt: /^\d{4}-\d{2}-\d{2}$/.test(g.endsAt || '') ? g.endsAt : d.grand.endsAt, endsHour: n(g.endsHour, 0, 23, 21) },
     daily: { on: !!dl.on, prize: txt(dl.prize, d.daily.prize) },
     sceneLen: n(c.sceneLen, 50, 100000, 1000), safeZone: n(c.safeZone, 0, 5000, 500), validDays: n(c.validDays, 1, 90, 7)
   };
@@ -301,8 +316,8 @@ function settle() {
     DB.settled[d] = true;
   }
   // grand prize once the campaign has ended
-  if (!DB.coupons.some(c => c.type === 'grand') && Date.now() > endOfDay(C.grand.endsAt)) {
-    const end = endOfDay(C.grand.endsAt), top = bestRun(r => r.ts <= end);
+  if (!DB.coupons.some(c => c.type === 'grand') && Date.now() >= cutoffMs(C.grand)) {
+    const end = cutoffMs(C.grand), top = bestRun(r => r.ts <= end);
     if (top) mockCoupon('grand', top.phone, Date.now(), C.grand.prize, { points: top.points });
   }
 }
@@ -356,6 +371,16 @@ const mockApi = {
     return { run, best: before.best ? before.best.points : 0, top: !!(after.best && after.best.id === run.id), leading: !!(after.leader && after.leader.id === run.id), flagged: !!why };
   },
   async myCoupons(phone) { return DB.coupons.filter(c => c.phone === phone).sort((a, b) => b.ts - a.ts); },
+  async leaderboard() {
+    settle();
+    const today = dayKey(Date.now());
+    const top = keep => {
+      const best = {};
+      for (const r of DB.runs) if (!r.flagged && keep(r) && (!best[r.phone] || r.points > best[r.phone].points)) best[r.phone] = r;
+      return Object.values(best).sort((a, b) => b.points - a.points).slice(0, 25).map((r, i) => ({ rank: i + 1, name: pname(r.phone) || 'Player', points: r.points }));
+    };
+    return { day: today, daily: top(r => dayKey(r.ts) === today), overall: top(() => true), updatedAt: Date.now() };
+  },
   async adminOverview(pin) {
     if (pin !== DB.pin) throw authErr();
     settle();
@@ -367,7 +392,7 @@ const mockApi = {
       if (r.points > b.points) { b.points = r.points; b.coins = r.coins; }
     }
     return {
-      stats: mockStats(), config: DB.config,
+      stats: mockStats(), config: DB.config, security: { events: [], suspects: [], clusters: [], banned: [] },
       leaderboard: Object.values(best).sort((a, b) => b.points - a.points),
       coupons: DB.coupons.slice().sort((a, b) => b.ts - a.ts).map(c => Object.assign({ name: pname(c.phone) }, c)),
       runs: DB.runs.slice().sort((a, b) => b.ts - a.ts).slice(0, 30).map(r => Object.assign({ name: pname(r.phone) }, r))
@@ -393,13 +418,18 @@ async function req(path, body, pin) {
   if (pin) headers['x-admin-pin'] = pin;
   const r = await fetch(CONFIG.apiBase + path, { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined });
   if (r.status === 401) throw authErr();
-  if (!r.ok) throw new Error('HTTP ' + r.status);
+  if (!r.ok) {
+    let m = 'HTTP ' + r.status;
+    try { const j = await r.json(); if (j && j.error) m = j.error; } catch (e) {}
+    throw Object.assign(new Error(m), { status: r.status });
+  }
   return r.json();
 }
 const tok = () => (ME && ME.token) || '';
 const serverApi = {
   stats: () => req('/stats'),
-  register: (name, phone) => req('/register', { name, phone }),
+  register: (name, phone) => req('/register', { name, phone, token: lsGet('grillcafe-tok-' + phone, '') }),
+  leaderboard: () => req('/leaderboard?live=1'),
   startRun: phone => req('/run-start', { phone, token: tok() }),
   claimTier: (phone, sessionId, tier, s) => req('/tier-claim', Object.assign({}, s, { phone, sessionId, tier, token: tok() })),
   submitRun: (phone, sessionId, s) => req('/run-finish', Object.assign({}, s, { phone, sessionId, token: tok() })),
@@ -1622,7 +1652,8 @@ $('hudlogo').innerHTML = MARK + '<span>The Grill Cafe</span>';
 let lastP = -1, lastC = -1, lastL = -1, lastJ = -1, puT = 0, toastTimer = 0;
 function toast(msg, ms) { toastEl.textContent = msg; toastEl.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { toastEl.hidden = true; }, ms || 2500); }
 function showBanner(txt) { bannerEl.textContent = txt; bannerEl.classList.remove('on'); void bannerEl.offsetWidth; bannerEl.classList.add('on'); }
-const endDate = () => campaign && campaign.grand ? new Date(campaign.grand.endsAt + 'T12:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : 'campaign end';
+const hr12 = h => (h % 12 || 12) + (h < 12 ? ' AM' : ' PM');
+const endDate = () => campaign && campaign.grand ? new Date(campaign.grand.endsAt + 'T12:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) + ', ' + hr12(campaign.grand.endsHour == null ? 21 : campaign.grand.endsHour) : 'campaign end';
 const grandPrize = () => campaign && campaign.grand ? campaign.grand.prize : '₹2,000 off';
 function tierSpan() {
   const ti = nextTierIdx(pts), from = ti <= 0 ? 0 : tiers[ti - 1].points, to = ti < 0 ? null : tiers[ti].points;
@@ -1674,7 +1705,7 @@ function showMenu() {
   let html = BRAND + '<h1>Shawarma Thief</h1>' +
     '<p class="sub">The poocha grabbed a shawarma and ran across Calicut. The shawarma master wants it back.</p>' +
     prizeList(st) +
-    '<p class="rule">Highest score when the campaign ends on <b>' + endDate() + '</b> wins <b>' + esc(grandPrize()) + '</b>.' +
+    '<p class="rule">Highest score by <b>' + endDate() + '</b> wins <b>' + esc(grandPrize()) + '</b>.' +
     (st && st.best ? ' Top score so far: <b>' + fmt(st.best.points) + '</b>' + (st.best.name ? ' by ' + esc(st.best.name) : '') + '.' : '') + '</p>';
   if (ME) html += '<p class="me">Playing as <b>' + esc(ME.name) + '</b> <button class="link" data-act="change">Change</button></p><button class="primary" data-act="go">Start running</button>';
   else html += '<form id="reg" novalidate><label>Your name<input id="nm" autocomplete="name" maxlength="30"></label>' +
@@ -1682,7 +1713,7 @@ function showMenu() {
     '<p class="err" id="err" hidden></p><button class="primary" type="submit">Start running</button>' +
     '<p class="fine">Your number is how we send and check coupons.' + (CONFIG.backend === 'server' ? '' : ' In this test version it stays on this phone.') + '</p></form>';
   html += '<p class="howto">Swipe ← → to switch lanes, ↑ to jump, ↓ to slide. Grab ♥ for an extra life, and look out for 🧲 magnet, 2× coins, 🚀 super jump and 🛡 shield. Just before each prize the poocha turns super, so you can’t lose it at the last second. After each prize it gets faster, with breather trees to rest in.</p>' +
-    toggles() + '<div class="row2"><button class="link" data-act="coupons">My coupons</button></div>';
+    toggles() + '<div class="row2"><button class="link" data-act="board">Leaderboard</button><button class="link" data-act="coupons">My coupons</button></div>';
   card.innerHTML = html; card.dataset.view = 'menu'; ov.hidden = false; canStart = true;
 }
 function ticket(c, label) {
@@ -1730,7 +1761,7 @@ async function endRun(saved) {
   if (res && res.leading) html += '<p class="rule">You’re today’s leader. Hold the top spot till midnight for ' + esc((campaign && campaign.daily.prize) || '') + '.</p>';
   if (res && res.flagged) html += '<p class="rule">This run will be checked by the cafe team before it counts.</p>';
   if (res && res.error) html += '<p class="rule">Couldn’t save this run. Check your connection.</p>';
-  html += '<button class="primary" data-act="go">Run again</button><div class="row2"><button class="link" data-act="menu">Menu</button><button class="link" data-act="coupons">My coupons</button></div>';
+  html += '<button class="primary" data-act="go">Run again</button><div class="row2"><button class="link" data-act="menu">Menu</button><button class="link" data-act="board">Leaderboard</button><button class="link" data-act="coupons">My coupons</button></div>';
   card.innerHTML = html; canStart = false; setTimeout(() => { canStart = true; }, 600);
   refreshStats();
 }
@@ -1750,6 +1781,28 @@ async function showCoupons() {
   html += '<button class="primary" data-act="back">Back</button>';
   card.innerHTML = html;
 }
+let boardTab = 'daily', boardData = null, boardErr = false, boardKey = '', boardAt = 0;
+function drawBoard() {
+  const list = boardData ? boardData[boardTab] : null;
+  const key = boardTab + '|' + boardErr + '|' + JSON.stringify(list);
+  if (key === boardKey && card.dataset.view === 'board') return;   // nothing changed: leave the screen (and its scroll) alone
+  boardKey = key;
+  const medal = ['🥇', '🥈', '🥉'], keep = [card.scrollTop, ov.scrollTop];
+  let html = BRAND + '<h1>Leaderboard</h1><div class="tabs"><button data-tab="daily" class="' + (boardTab === 'daily' ? 'on' : '') + '">Today</button>' +
+    '<button data-tab="overall" class="' + (boardTab === 'overall' ? 'on' : '') + '">Overall</button></div>';
+  if (!list) html += boardErr ? '<p class="sub">Couldn’t load the leaderboard. Check your connection.</p>' : '<div class="spin"></div>';
+  else if (!list.length) html += '<p class="sub">' + (boardTab === 'daily' ? 'No scores yet today. Be the first on the board!' : 'No scores yet. Be the first on the board!') + '</p>';
+  else html += '<ul class="board">' + list.map(r => '<li' + (ME && r.name === ME.name ? ' class="me"' : '') + '><span class="rk">' + (medal[r.rank - 1] || r.rank) + '</span><span class="nm">' + esc(r.name) + '</span><span class="pt">' + fmt(r.points) + '</span></li>').join('') + '</ul>';
+  html += '<p class="live">' + (boardErr && list ? 'Offline. Showing the last update.' : 'Updated ' + new Date(boardAt || Date.now()).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' }) + '. Reopen to refresh.') + '</p><button class="primary" data-act="back">Back</button>';
+  card.innerHTML = html; card.dataset.view = 'board'; card.scrollTop = keep[0]; ov.scrollTop = keep[1];
+}
+async function loadBoard() {
+  try { boardData = await api.leaderboard(); boardErr = false; boardAt = Date.now(); } catch (e) { boardErr = true; }
+  if (card.dataset.view === 'board') drawBoard();
+}
+function showBoard() {
+  boardKey = ''; ov.hidden = false; card.dataset.view = 'board-loading'; drawBoard(); loadBoard();   // one fetch per opening; no background polling, so an idle database can sleep
+}
 function toMenu() {
   state = 'menu'; hudEl.hidden = true; ctlEl.hidden = true; obs = []; cns = []; hero = false; band = 0; restTree = null;
   P.lane = 0; P.y = 0; P.vy = 0; P.slide = 0; P.stumble = 0; chase.gap = 1.15;
@@ -1761,11 +1814,14 @@ function continueRun() {
   showBanner('Level ' + (band + 1) + '!');
 }
 card.addEventListener('click', e => {
+  const tb = e.target.closest('[data-tab]');
+  if (tb) { boardTab = tb.dataset.tab === 'overall' ? 'overall' : 'daily'; drawBoard(); return; }
   const b = e.target.closest('[data-act]'); if (!b) return;
   const a = b.dataset.act; auInit();
   if (a === 'go' && canStart) start();
   else if (a === 'change') { ME = null; saveMe(); showMenu(); }
   else if (a === 'coupons') showCoupons();
+  else if (a === 'board') showBoard();
   else if (a === 'back') { state === 'over' ? toMenu() : showMenu(); }
   else if (a === 'menu') toMenu();
   else if (a === 'cont') continueRun();
@@ -1785,7 +1841,8 @@ card.addEventListener('submit', async e => {
   if (name.length < 2) { err.textContent = 'Enter your name.'; err.hidden = false; return; }
   if (!/^[6-9]\d{9}$/.test(phone)) { err.textContent = 'Enter a 10-digit mobile number starting with 6, 7, 8 or 9.'; err.hidden = false; return; }
   let reg;
-  try { reg = await api.register(name, phone); } catch (er) { err.textContent = 'Couldn’t reach the server. Try again.'; err.hidden = false; return; }
+  try { reg = await api.register(name, phone); } catch (er) { err.textContent = er.status ? er.message : 'Couldn’t reach the server. Try again.'; err.hidden = false; return; }
+  if (reg && reg.token && CONFIG.backend === 'server') lsSet('grillcafe-tok-' + phone, reg.token);
   ME = { name, phone, token: reg && reg.token }; saveMe(); start();
 });
 muteBtn.addEventListener('click', () => { auInit(); setMute(!AU.muted); });
@@ -1829,7 +1886,8 @@ async function renderAdmin() {
     '<h3>Prize levels</h3><form id="setf" class="set" style="display:block">' +
     '<div id="tlist">' + adminTiers.map(tierRow).join('') + '</div>' +
     '<p><button type="button" class="small-btn" data-act="addtier">+ Add prize level</button></p>' +
-    '<div class="tedit" style="grid-template-columns:2fr 1fr"><label>Top score prize<input id="gPrize" maxlength="40" value="' + esc(C.grand.prize) + '"></label><label>Campaign ends<input id="gEnd" type="date" value="' + C.grand.endsAt + '"></label></div>' +
+    '<div class="tedit" style="grid-template-columns:2fr 1fr"><label>Top score prize<input id="gPrize" maxlength="40" value="' + esc(C.grand.prize) + '"></label><label>Race closes (date)<input id="gEnd" type="date" value="' + C.grand.endsAt + '"></label></div>' +
+    '<div class="tedit" style="grid-template-columns:1fr 2fr"><label>Closes at (hour, 24h India time)<input id="gHour" type="number" min="0" max="23" value="' + (C.grand.endsHour == null ? 21 : C.grand.endsHour) + '"></label><p class="fine" style="align-self:end">Scores after this time still earn level prizes but not the top-score prize. 21 = 9 PM.</p></div>' +
     '<div class="tedit" style="grid-template-columns:auto 2fr"><label><input id="dOn" type="checkbox" style="width:auto;display:inline;margin-right:6px"' + (C.daily.on ? ' checked' : '') + '>Daily record prize</label><label>Daily prize<input id="dPrize" maxlength="40" value="' + esc(C.daily.prize) + '"></label></div>' +
     '<div class="tedit" style="grid-template-columns:1fr 1fr 1fr"><label>Points per scene<input id="sScene" type="number" min="50" step="50" value="' + C.sceneLen + '"></label><label>Super zone before a prize<input id="sSafe" type="number" min="0" step="50" value="' + C.safeZone + '"></label><label>Coupon valid (days)<input id="sDays" type="number" min="1" value="' + C.validDays + '"></label></div>' +
     '<button class="primary" type="submit">Save settings</button></form>' +
@@ -1840,7 +1898,7 @@ async function renderAdmin() {
     '<p><button class="small-btn" data-act="grand">Award top score prize now</button> <span class="fine">Happens automatically the day after the campaign ends.</span></p>' +
     '<h3>Coupons</h3><div class="tw"><table><thead><tr><th>Code</th><th>Prize</th><th>For</th><th>Name</th><th>Mobile</th><th>Issued</th><th>Valid till</th><th>Status</th><th></th></tr></thead><tbody>' +
     d.coupons.map(c => {
-      const s = c.redeemed ? 'Redeemed' : c.expires < now ? 'Expired' : 'Active';
+      const s = c.banned ? 'BANNED: do not honour' : c.redeemed ? 'Redeemed' : c.expires < now ? 'Expired' : 'Active';
       return '<tr><td><b>' + esc(c.code) + '</b></td><td>' + esc(c.value) + '</td><td>' + ctype(c) + '</td><td>' + esc(c.name || '—') + '</td><td>' + esc(c.phone) + '</td><td>' + dShort(c.ts) + '</td><td>' + dShort(c.expires) + '</td><td>' + s + '</td>' +
         '<td><button class="small-btn" data-code="' + esc(c.code) + '" data-v="' + (c.redeemed ? '0' : '1') + '">' + (c.redeemed ? 'Undo' : 'Mark redeemed') + '</button></td></tr>';
     }).join('') + '</tbody></table></div>' +
@@ -1848,7 +1906,32 @@ async function renderAdmin() {
     d.runs.map(r => '<tr><td>' + dTime(r.ts) + '</td><td>' + esc(r.name || '—') + '</td><td class="n">' + fmt(r.points) + '</td><td class="n">' + fmt(r.coins) + '</td><td class="n">' + Math.floor(r.secs / 60) + 'm ' + pad(r.secs % 60) + 's</td><td class="n">' + (r.secs ? (r.points / r.secs).toFixed(1) : '—') + '</td><td>' +
       (r.flagged ? '<span class="tag warn">' + esc(r.reason || 'flagged') + '</span> <button class="small-btn" data-unflag="' + r.id + '">Approve</button>' : '<span class="tag on">OK</span>') + '</td></tr>').join('') +
     '</tbody></table></div>' +
+    securityHtml(d.security) +
     '<h3>Tools</h3><p>' + (CONFIG.backend === 'server' ? '' : '<button class="small-btn danger" data-act="reset">Reset mock data</button> ') + '<button class="small-btn" data-act="lock">Lock admin</button></p></div>';
+}
+const EVENT_LABEL = {
+  admin_login_fail: 'Wrong admin PIN', admin_locked: 'Admin locked (brute force)', admin_action: 'Admin action', bad_token: 'Wrong device token',
+  register_blocked: 'Number takeover blocked', rate_limited: 'Rate limited', cheat_flag: 'Impossible run', prize_won: 'Prize won', banned_access: 'Banned number tried to play'
+};
+const BAD_EVENTS = ['admin_login_fail', 'admin_locked', 'bad_token', 'register_blocked', 'rate_limited', 'cheat_flag', 'banned_access'];
+function securityHtml(sec) {
+  if (!sec) return '';
+  const det = o => { try { return Object.entries(o || {}).map(([k, v]) => k + ': ' + (typeof v === 'object' ? JSON.stringify(v) : v)).join(', '); } catch (e) { return ''; } };
+  const bad = sec.events.filter(e => BAD_EVENTS.includes(e.kind) && e.ts > Date.now() - 864e5).length;
+  return '<h3>Security</h3><p class="note">' + (bad ? '<b>' + bad + '</b> suspicious event' + (bad > 1 ? 's' : '') + ' in the last 24 hours.' : 'Nothing suspicious in the last 24 hours.') + ' Every wrong PIN, blocked sign-in, impossible run, prize and admin change is recorded with the address it came from.</p>' +
+    '<div class="tedit" style="grid-template-columns:2fr auto auto auto"><label>Mobile number<input id="secPhone" inputmode="numeric" maxlength="10" placeholder="10-digit number"></label>' +
+    '<button type="button" class="small-btn danger" data-sec="ban">Ban</button><button type="button" class="small-btn" data-sec="unban">Unban</button>' +
+    '<button type="button" class="small-btn" data-sec="reset">Let owner sign in again</button></div>' +
+    '<p class="fine">Ban hides the player’s runs, stops them playing and marks their coupons “do not honour”. “Let owner sign in again” is for a real customer who lost their phone: it allows one new sign-in within 24 hours.</p>' +
+    (sec.banned.length ? '<h4>Banned</h4><p>' + sec.banned.map(b => esc(b.name) + ' (' + esc(b.phone) + ') <button class="small-btn" data-ban="' + esc(b.phone) + '" data-v="0">Unban</button>').join('<br>') + '</p>' : '') +
+    (sec.suspects.length ? '<h4>Players to check (2+ flagged runs, or over 30 points a second)</h4><div class="tw"><table><thead><tr><th>Name</th><th>Mobile</th><th class="n">Flagged</th><th class="n">Fastest pts/s</th><th>Why</th><th>Address</th><th></th></tr></thead><tbody>' +
+      sec.suspects.map(x => '<tr><td>' + esc(x.name) + '</td><td>' + esc(x.phone) + '</td><td class="n">' + x.flagged + '</td><td class="n">' + (x.fastest == null ? '—' : x.fastest) + '</td><td>' + esc(x.reasons.join(', ') || '—') + '</td><td>' + esc(x.ip || '—') + '</td><td>' +
+        (x.banned ? '<span class="tag warn">Banned</span>' : '<button class="small-btn danger" data-ban="' + esc(x.phone) + '" data-v="1">Ban</button>') + '</td></tr>').join('') + '</tbody></table></div>' : '') +
+    (sec.clusters.length ? '<h4>Many numbers from one network (24h). Could be the cafe Wi-Fi, or one person with many numbers</h4><div class="tw"><table><thead><tr><th>Address</th><th class="n">Numbers</th></tr></thead><tbody>' +
+      sec.clusters.map(c => '<tr><td>' + esc(c.ip) + '</td><td class="n">' + c.numbers + '</td></tr>').join('') + '</tbody></table></div>' : '') +
+    '<h4>Audit log (latest 100)</h4><div class="tw"><table><thead><tr><th>When</th><th>Event</th><th>Mobile</th><th>Address</th><th>Details</th></tr></thead><tbody>' +
+    (sec.events.length ? sec.events.map(e => '<tr><td>' + dTime(e.ts) + '</td><td>' + (BAD_EVENTS.includes(e.kind) ? '<span class="tag warn">' : '<span class="tag on">') + esc(EVENT_LABEL[e.kind] || e.kind) + '</span></td><td>' + esc(e.phone || '—') + '</td><td>' + esc(e.ip || '—') + '</td><td>' + esc(det(e.detail)) + '</td></tr>').join('') : '<tr><td colspan="5">No events yet.</td></tr>') +
+    '</tbody></table></div>';
 }
 let adminTiers = [];
 function readTierRows() {
@@ -1861,11 +1944,14 @@ adminEl.addEventListener('submit', async e => {
   if (e.target.id === 'pinf') {
     const pin = adminEl.querySelector('#pin').value;
     try { await api.adminOverview(pin); adminPin = pin; try { sessionStorage.setItem('grillcafe-admin', pin); } catch (er) {} renderAdmin(); }
-    catch (er) { adminEl.querySelector('#perr').hidden = false; }
+    catch (er) {
+      const pe = adminEl.querySelector('#perr');
+      pe.textContent = er.status === 429 || er.status === 503 ? er.message : 'Wrong PIN.'; pe.hidden = false;
+    }
   } else if (e.target.id === 'setf') {
     const q = id => adminEl.querySelector(id);
     const config = cleanCampaign({
-      tiers: readTierRows(), grand: { prize: q('#gPrize').value, endsAt: q('#gEnd').value }, daily: { on: q('#dOn').checked, prize: q('#dPrize').value },
+      tiers: readTierRows(), grand: { prize: q('#gPrize').value, endsAt: q('#gEnd').value, endsHour: q('#gHour').value }, daily: { on: q('#dOn').checked, prize: q('#dPrize').value },
       sceneLen: q('#sScene').value, safeZone: q('#sSafe').value, validDays: q('#sDays').value
     });
     try { await api.adminAction(adminPin, { action: 'config', config }); toast('Settings saved', 1800); } catch (er) { toast('Couldn’t save: ' + er.message, 2500); }
@@ -1881,8 +1967,22 @@ adminEl.addEventListener('click', async e => {
     div.innerHTML = '<div class="tedit"><label>Points<input data-f="points" type="number" min="100" step="500" value="' + (lastPts + 10000) + '"></label><label>Winners<input data-f="slots" type="number" min="0" value="3"></label><label>Prize<input data-f="prize" maxlength="40" value=""></label><button type="button" class="small-btn" data-rm="x" aria-label="Remove prize level">✕</button></div>';
     adminEl.querySelector('#tlist').appendChild(div.firstChild); return;
   }
-  if (b.dataset.code) { await api.adminAction(adminPin, { action: 'redeem', code: b.dataset.code, value: b.dataset.v === '1' }); renderAdmin(); }
-  else if (b.dataset.unflag) { await api.adminAction(adminPin, { action: 'unflag', id: Number(b.dataset.unflag) }); renderAdmin(); }
+  const act = async a => { try { await api.adminAction(adminPin, a); return true; } catch (er) { if (er.auth) { adminPin = null; try { sessionStorage.removeItem('grillcafe-admin'); } catch (x) {} renderAdmin(); } else toast(er.message, 3000); return false; } };
+  if (b.dataset.sec) {
+    const ph = (adminEl.querySelector('#secPhone').value || '').replace(/\D/g, '');
+    if (!/^[6-9]\d{9}$/.test(ph)) { toast('Enter the 10-digit mobile number first', 2500); return; }
+    if (b.dataset.sec === 'ban' && !confirm('Ban ' + ph + '? Their runs are hidden and their coupons are marked do not honour.')) return;
+    const a = b.dataset.sec === 'reset' ? { action: 'reset_player', phone: ph } : { action: 'ban', phone: ph, value: b.dataset.sec === 'ban' };
+    if (await act(a)) { toast(b.dataset.sec === 'reset' ? 'Owner can sign in again for 24 hours' : b.dataset.sec === 'ban' ? 'Banned' : 'Unbanned', 2200); renderAdmin(); }
+    return;
+  }
+  if (b.dataset.ban) {
+    if (b.dataset.v === '1' && !confirm('Ban ' + b.dataset.ban + '?')) return;
+    if (await act({ action: 'ban', phone: b.dataset.ban, value: b.dataset.v === '1' })) renderAdmin();
+    return;
+  }
+  if (b.dataset.code) { if (await act({ action: 'redeem', code: b.dataset.code, value: b.dataset.v === '1' })) renderAdmin(); }
+  else if (b.dataset.unflag) { if (await act({ action: 'unflag', id: Number(b.dataset.unflag) })) renderAdmin(); }
   else if (b.dataset.act === 'grand') { if (confirm('Give the top score prize to the current #1 now? This can only happen once.')) { const r = await api.adminAction(adminPin, { action: 'grand' }); if (r && r.ok === false) toast(r.error || 'Not awarded', 2500); renderAdmin(); } }
   else if (b.dataset.act === 'reset') { if (confirm('Reset all mock players, runs and coupons?')) { await api.adminAction(adminPin, { action: 'reset' }); refreshStats(); renderAdmin(); } }
   else if (b.dataset.act === 'lock') { adminPin = null; try { sessionStorage.removeItem('grillcafe-admin'); } catch (er) {} renderAdmin(); }

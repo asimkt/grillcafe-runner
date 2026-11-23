@@ -1,6 +1,8 @@
 # Shawarma Thief: The Grill Cafe campaign game
 
-One static page (`index.html`, the game in server mode) plus a few Vercel functions in `api/` backed by Neon Postgres. No build step.
+Two static pages plus a few Vercel functions. `index.html` is the marketing page (Calicut Shawarma Month) and `play.html` is the game in server mode (served at `/play`; `/admin` redirects to `/play#admin`).
+
+Originally: one static page (the game in server mode) plus a few Vercel functions in `api/` backed by Neon Postgres. No build step.
 
 ## Test mode vs server mode
 The game reads `window.GRILL_CONFIG` before it starts:
@@ -40,3 +42,31 @@ The game reads `window.GRILL_CONFIG` before it starts:
 - Clear test rows: `TRUNCATE runs, sessions, coupons, daily_awards, players CASCADE;`
 - Check the prize levels and end date in admin, and set points per scene back to 1,000.
 - Add a terms page: one prize per person, 7-day validity, the cafe may void suspicious wins, campaign end date.
+
+## Live site
+- Production: https://grillcafe-runner.vercel.app (landing), `/play` (game), `/admin` (admin).
+- Neon project `grillcafe` (Singapore). Branch `test` is a throwaway copy used only by the tests. Compute scales to zero after 5 idle minutes.
+- Vercel env vars (Production): `DATABASE_URL`, `ADMIN_PIN` (8+ characters, admin refuses to run with less), `CRON_SECRET`. Optional: `ALERT_WEBHOOK_URL` (a Slack incoming webhook) to be told about attacks as they happen.
+
+## Keeping Neon asleep
+- Marketing page: leaderboard and prize counts come from the Vercel edge cache (30 minutes) and refresh every 30 minutes (`/api/leaderboard`, `/api/stats?public=1`).
+- Game: the leaderboard loads once when a player opens it (`?live=1`, cached 60 seconds). Nothing polls in the background. A test checks that no page polls faster than every 30 minutes.
+
+## Top-score race
+Closes on `grand.endsAt` at `grand.endsHour` India time (default 9 PM). Runs after that still earn level prizes but not the top-score prize, and the overall leaderboard freezes. The daily job issues the prize after that moment (00:05 on the next day), so the winner collects from 1 January.
+
+## Security
+- Admin: PIN checked in constant time; 5 wrong PINs from one address, or 50 from anywhere, in 15 minutes locks admin for 15 minutes (even the right PIN). Every admin action is audited.
+- Sign-in: a number that already has runs or coupons can't be re-registered by another phone (the real owner's phone sends its old token; otherwise the cafe team unlocks the number in admin for 24 hours). This is a stop-gap until OTP.
+- Fair play: server-timed runs, impossible runs flagged and logged, one coupon per phone per level, advisory lock against over-claiming.
+- Audit log (`security_events`): wrong PINs, lockouts, blocked sign-ins, wrong tokens, flagged runs, prizes, admin actions, with the address each came from. Admin > Security shows suspects (2+ flagged runs or over 30 points/second), networks with 5+ numbers, banned players and the latest 100 events. Ban hides a player's runs, blocks play, voids prizes.
+- Headers: CSP, HSTS, no framing, nosniff, no-referrer. `schema.sql`, `HANDOFF.md`, `README.md`, `test/` and `game-test-mode.html` are not published (`.vercelignore`).
+- Known limit: scores come from the player's phone, so a determined cheater who stays under 48 points a second can't be proven wrong by the server. Staff should glance at the run (pts/sec in admin) before honouring a top prize. OTP and the audit log raise the cost of cheating; they don't make it impossible.
+
+## Tests
+`npm test` runs 80 tests: the real API handlers against a throwaway Neon branch (fair play, prizes incl. 10 simultaneous claims, admin lockout, takeover, ban, leaderboard, cron, injection) plus checks on headers, secrets and public files.
+The tests wipe their database, so they refuse to run unless you name it:
+```
+TEST_DATABASE_URL='postgresql://...test-branch...' CONFIRM_TEST_DB_HOST='<that url host>' npm test
+```
+Never point `TEST_DATABASE_URL` at the production branch.

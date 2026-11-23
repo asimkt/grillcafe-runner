@@ -55,7 +55,25 @@ CREATE TABLE IF NOT EXISTS config (key text PRIMARY KEY, value text NOT NULL);
 -- The whole campaign lives in one JSON row, edited from the admin page.
 INSERT INTO config (key, value) VALUES ('campaign', '{
   "tiers": [{"points":10000,"slots":20,"prize":"Free shawarma"},{"points":20000,"slots":10,"prize":"₹200 off"},{"points":30000,"slots":5,"prize":"₹500 off"}],
-  "grand": {"prize":"₹2,000 off","endsAt":"2026-12-31"},
+  "grand": {"prize":"₹2,000 off","endsAt":"2026-12-31","endsHour":21},
   "daily": {"on":false,"prize":"₹1,000 off"},
   "sceneLen": 1000, "safeZone": 500, "validDays": 7
 }') ON CONFLICT (key) DO NOTHING;
+
+-- ---- Security (added after the first deploy). Safe to run more than once. ----
+ALTER TABLE players ADD COLUMN IF NOT EXISTS banned_at     timestamptz;   -- set by admin: blocks play, hides runs, voids prizes
+ALTER TABLE players ADD COLUMN IF NOT EXISTS reclaim_until timestamptz;   -- set by admin: lets the owner sign in again from a new phone
+ALTER TABLE players ADD COLUMN IF NOT EXISTS ip            text;
+ALTER TABLE runs    ADD COLUMN IF NOT EXISTS ip            text;
+-- Audit trail: wrong admin PINs, lockouts, blocked sign-ins, flagged runs, prizes, admin actions.
+CREATE TABLE IF NOT EXISTS security_events (
+  id     bigserial PRIMARY KEY,
+  at     timestamptz NOT NULL DEFAULT now(),
+  kind   text NOT NULL,
+  ip     text,
+  phone  text,
+  detail jsonb
+);
+CREATE INDEX IF NOT EXISTS security_events_kind_at ON security_events (kind, at DESC);
+CREATE INDEX IF NOT EXISTS security_events_ip_at   ON security_events (ip, at DESC);
+CREATE INDEX IF NOT EXISTS runs_phone_idx          ON runs (phone);

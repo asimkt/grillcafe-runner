@@ -1,10 +1,10 @@
-import { sql, handler, send, couponCode, getConfig } from './_lib.js';
+import { sql, handler, send, couponCode, getConfig, cutoffIso, safeEqual } from './_lib.js';
 import { awardGrand } from './admin.js';
 // Runs daily at 00:05 India time (vercel.json).
 // 1. If the daily record prize is on: each finished India day's top run wins it, if it beat every earlier run.
 // 2. Once the campaign end date has passed: the top score overall wins the grand prize (once).
 export default handler(['GET'], async (req, res) => {
-  if (!process.env.CRON_SECRET || req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) return send(res, 401, { error: 'unauthorized' });
+  if (!process.env.CRON_SECRET || !safeEqual(req.headers.authorization || '', `Bearer ${process.env.CRON_SECRET}`)) return send(res, 401, { error: 'unauthorized' });
   const cfg = await getConfig(), out = { daily: [], grand: null };
   const days = await sql`
     SELECT DISTINCT ((created_at AT TIME ZONE 'Asia/Kolkata')::date)::text AS d FROM runs
@@ -26,7 +26,7 @@ export default handler(['GET'], async (req, res) => {
               VALUES (${d}::date, ${top ? top.phone : null}, ${top ? top.id : null}, ${top ? top.points : null}, ${code}) ON CONFLICT (day) DO NOTHING`;
     out.daily.push({ day: d, code });
   }
-  const [ended] = await sql`SELECT (now() AT TIME ZONE 'Asia/Kolkata')::date > ${cfg.grand.endsAt}::date AS over`;
+  const [ended] = await sql`SELECT now() >= ${cutoffIso(cfg)}::timestamptz AS over`;
   if (ended.over) out.grand = await awardGrand(cfg);
   send(res, 200, out);
 });
