@@ -33,13 +33,16 @@ particles, drawing, UI screens, admin, input, loop.
 - Live at https://grillcafe-runner.vercel.app. Server code is tested (80 tests, see README) and deployed with Neon.
 - `index.html` is the marketing page (Calicut Shawarma Month, 1 Dec to 1 Jan, top score by 31 Dec 9 PM wins). The game is `play.html`.
 - Leaderboard (today + overall, names and scores only), security hardening, audit log and admin Security panel are done.
+- Admin uses named accounts: `asim` (owner), `shameem` and `manager` (managers). PINs were given to Asim once; reset with `scripts/admin-user.mjs reset <username>`.
+- The game is the poocha (cat) running away from the shawarma master. Marketing copy must never say "catch the poocha".
+- Do not describe anti-cheat checks in any public text (owner's instruction).
 - The production database currently holds real test plays (e.g. "Asim KT"). Clear them before launch only with the owner's say-so.
 
 ## Open items
 1. OTP phone verification before issuing the device token (`api/register.js`). The takeover block is a stop-gap.
 2. Terms page: the rules on the landing page are a draft, to be reviewed by the owner.
 3. Launch checklist: new admin PIN, clear test data (`TRUNCATE runs, sessions, coupons, daily_awards, players, security_events CASCADE;` on the `grillcafe` main branch only), table QR codes (`/?t=<table>`), staff briefing on redeeming codes in admin.
-4. Decide coupon validity: tier coupons currently last 7 days from the win (admin setting).
+4. Coupon validity is a fixed date (31 Jan 2027, set in admin). Redemption is manual by staff. Revisit the logic later (owner's note).
 5. Optional: retune difficulty after more playtests (speed caps in `speedCap()`, row gaps in `spawnRow()`).
 
 ## Testing tip

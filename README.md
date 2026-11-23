@@ -46,7 +46,7 @@ The game reads `window.GRILL_CONFIG` before it starts:
 ## Live site
 - Production: https://grillcafe-runner.vercel.app (landing), `/play` (game), `/admin` (admin).
 - Neon project `grillcafe` (Singapore). Branch `test` is a throwaway copy used only by the tests. Compute scales to zero after 5 idle minutes.
-- Vercel env vars (Production): `DATABASE_URL`, `ADMIN_PIN` (8+ characters, admin refuses to run with less), `CRON_SECRET`. Optional: `ALERT_WEBHOOK_URL` (a Slack incoming webhook) to be told about attacks as they happen.
+- Vercel env vars (Production): `DATABASE_URL`, `CRON_SECRET`. Optional: `ALERT_WEBHOOK_URL` (a Slack incoming webhook) to be told about attacks as they happen. There is no shared admin PIN any more.
 
 ## Keeping Neon asleep
 - Marketing page: leaderboard and prize counts come from the Vercel edge cache (30 minutes) and refresh every 30 minutes (`/api/leaderboard`, `/api/stats?public=1`).
@@ -56,7 +56,8 @@ The game reads `window.GRILL_CONFIG` before it starts:
 Closes on `grand.endsAt` at `grand.endsHour` India time (default 9 PM). Runs after that still earn level prizes but not the top-score prize, and the overall leaderboard freezes. The daily job issues the prize after that moment (00:05 on the next day), so the winner collects from 1 January.
 
 ## Security
-- Admin: PIN checked in constant time; 5 wrong PINs from one address, or 50 from anywhere, in 15 minutes locks admin for 15 minutes (even the right PIN). Every admin action is audited.
+- Admin accounts: each person has a username and their own PIN (stored as a salted scrypt hash). Roles: `owner` does everything; `manager` can redeem coupons, approve runs, ban/unban, unlock customers and read the security report, but cannot change prize settings, award the top-score prize or manage accounts. 5 wrong tries from one address, 5 against one username, or 50 from anywhere in 15 minutes lock that door for 15 minutes (even the right PIN). Every admin action is audited under the person's username. Manage accounts from the admin page (owner) or `DATABASE_URL=... node scripts/admin-user.mjs add|reset|disable|enable|list`.
+- Quiet by design: the game and API never say why a run or claim was held back, and error messages for blocked numbers are vague. Details are only in the admin audit log.
 - Sign-in: a number that already has runs or coupons can't be re-registered by another phone (the real owner's phone sends its old token; otherwise the cafe team unlocks the number in admin for 24 hours). This is a stop-gap until OTP.
 - Fair play: server-timed runs, impossible runs flagged and logged, one coupon per phone per level, advisory lock against over-claiming.
 - Audit log (`security_events`): wrong PINs, lockouts, blocked sign-ins, wrong tokens, flagged runs, prizes, admin actions, with the address each came from. Admin > Security shows suspects (2+ flagged runs or over 30 points/second), networks with 5+ numbers, banned players and the latest 100 events. Ban hides a player's runs, blocks play, voids prizes.
@@ -64,9 +65,14 @@ Closes on `grand.endsAt` at `grand.endsHour` India time (default 9 PM). Runs aft
 - Known limit: scores come from the player's phone, so a determined cheater who stays under 48 points a second can't be proven wrong by the server. Staff should glance at the run (pts/sec in admin) before honouring a top prize. OTP and the audit log raise the cost of cheating; they don't make it impossible.
 
 ## Tests
-`npm test` runs 80 tests: the real API handlers against a throwaway Neon branch (fair play, prizes incl. 10 simultaneous claims, admin lockout, takeover, ban, leaderboard, cron, injection) plus checks on headers, secrets and public files.
+`npm test` runs 104 tests: the real API handlers against a throwaway Neon branch (fair play, prizes incl. 10 simultaneous claims, admin lockout, takeover, ban, leaderboard, cron, injection) plus checks on headers, secrets and public files.
 The tests wipe their database, so they refuse to run unless you name it:
 ```
 TEST_DATABASE_URL='postgresql://...test-branch...' CONFIRM_TEST_DB_HOST='<that url host>' npm test
 ```
 Never point `TEST_DATABASE_URL` at the production branch.
+
+## Coupons and tracking
+- Coupon expiry: set "Coupons valid until (date)" in admin settings (currently 31 Jan 2027, end of day India time). If empty, `validDays` from the win is used.
+- Table QR codes: print `https://grillcafe-runner.vercel.app/t/<table number>`. The landing page passes the table to the game and the player's first sign-in is tagged `table-<n>`. Admin > "Where players come from" counts players, runs and prizes per table or source (`/play?src=instagram` works too).
+- Visits: Vercel Web Analytics is switched on (cookie-less, no database), so `/t/12` page views show per table in the Vercel dashboard without waking Neon.

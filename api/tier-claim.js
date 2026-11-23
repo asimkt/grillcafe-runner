@@ -1,21 +1,21 @@
-import { sql, handler, send, auth, getConfig, loadSession, judgeRun, couponCode, int, couponOut, getIp, logEvent } from './_lib.js';
+import { sql, handler, send, auth, getConfig, loadSession, judgeRun, couponCode, int, couponOut, getIp, logEvent, expiryIso } from './_lib.js';
 // POST { phone, token, sessionId, tier, points, coins, secs } when the run enters the super zone before a prize.
 // One coupon per phone per prize level, never more than that level's winners, even under concurrent claims.
 export default handler(['POST'], async (req, res, b) => {
   const p = await auth(b.phone, b.token, req), ip = getIp(req);
   const ses = await loadSession(b.sessionId, p.phone);
-  if (!ses || ses.finished_at) return send(res, 200, { rejected: true, reason: 'unknown session' });
+  if (!ses || ses.finished_at) return send(res, 200, { ok: false });
   const cfg = await getConfig(), ti = int(b.tier, 100), tier = cfg.tiers[ti];
-  if (!tier) return send(res, 200, { rejected: true, reason: 'no such prize' });
+  if (!tier) return send(res, 200, { ok: false });
   const s = { points: int(b.points), coins: int(b.coins), secs: int(b.secs, 86400) };
   const why = judgeRun(s, Number(ses.secs));
-  if (why) { await logEvent('cheat_flag', ip, p.phone, { reason: why, tier: ti, points: s.points, coins: s.coins, secs: s.secs, serverSecs: Math.round(Number(ses.secs)), at: 'tier-claim' }); return send(res, 200, { rejected: true, reason: why }); }
-  if (s.points < tier.points - cfg.safeZone) return send(res, 200, { rejected: true, reason: 'not enough points' });
+  if (why) { await logEvent('cheat_flag', ip, p.phone, { reason: why, tier: ti, points: s.points, coins: s.coins, secs: s.secs, serverSecs: Math.round(Number(ses.secs)), at: 'tier-claim' }); return send(res, 200, { ok: false }); }
+  if (s.points < tier.points - cfg.safeZone) return send(res, 200, { ok: false });
   const code = couponCode();
   const [, inserted, count] = await sql.transaction([
     sql`SELECT pg_advisory_xact_lock(424242, ${ti}::int)`,
     sql`INSERT INTO coupons (code, type, tier, phone, value, session_id, points, expires_at)
-        SELECT ${code}, 'tier', ${ti}::int, ${p.phone}, ${tier.prize}, ${ses.id}, ${tier.points}, now() + make_interval(days => ${cfg.validDays}::int)
+        SELECT ${code}, 'tier', ${ti}::int, ${p.phone}, ${tier.prize}, ${ses.id}, ${tier.points}, ${expiryIso(cfg)}::timestamptz
         WHERE NOT EXISTS (SELECT 1 FROM coupons WHERE type = 'tier' AND tier = ${ti}::int AND phone = ${p.phone})
           AND (SELECT count(*) FROM coupons WHERE type = 'tier' AND tier = ${ti}::int) < ${tier.slots}::int
         RETURNING *`,

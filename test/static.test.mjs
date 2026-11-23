@@ -14,7 +14,7 @@ test('security headers are set for every page', () => {
   assert.ok(!/script-src[^;]*https?:/.test(h['Content-Security-Policy']), 'no third-party scripts allowed');
 });
 test('internal files are not published', () => {
-  const ign = read('.vercelignore'); for (const f of ['HANDOFF.md', 'schema.sql', 'README.md', 'game-test-mode.html', 'test']) assert.ok(ign.split('\n').includes(f), f);
+  const ign = read('.vercelignore'); for (const f of ['HANDOFF.md', 'schema.sql', 'README.md', 'game-test-mode.html', 'test', 'scripts']) assert.ok(ign.split('\n').includes(f), f);
 });
 test('no secrets or connection strings are committed', () => {
   const bad = [];
@@ -33,7 +33,18 @@ test('nothing polls the server in the background more often than every 30 minute
     const ms = Function('return (' + m[1].replace(/\*/g, '*') + ')')(); if (ms >= 1000 && ms < 1800000 && !/tick/.test(m[0])) assert.fail(f + ' polls every ' + ms + 'ms: ' + m[0].slice(0, 80));
   }
 });
-test('admin endpoints always go through the lockout gate', () => assert.match(read('api/admin.js'), /await adminGate\(req\)/));
+test('public pages never describe how cheating is detected', () => {
+  for (const f of ['index.html', 'play.html']) { const t = read(f).replace(/<script[\s\S]*?<\/script>/g, m => m.includes('GRILL_CONFIG') ? '' : m);
+    for (const m of t.matchAll(/(timed by our server|look impossible|held back|checked by the cafe team|flagged for review|will be checked)/gi)) { const ctx = t.slice(Math.max(0, m.index - 60), m.index + 60); if (!/\/\/|admin|Admin|data-unflag|runs flagged/.test(ctx)) assert.fail(f + ' reveals: ' + ctx); } }
+});
+test('the landing page frames the player as the poocha, not the chaser', () => {
+  const t = read('index.html'); assert.ok(!/catch the poocha|chase the poocha|run it down/i.test(t)); assert.match(t, /you’re the <b>poocha<\/b>/i);
+});
+test('table QR links (/t/12) are routed to the landing page', () => assert.ok(JSON.parse(read('vercel.json')).rewrites.some(r => r.source === '/t/:n')));
+test('admin endpoints always go through the login gate, and there is no shared PIN left', () => {
+  assert.match(read('api/admin.js'), /await adminGate\(req\)/);
+  for (const f of fs.readdirSync(path.join(root, 'api'))) assert.ok(!/ADMIN_PIN/.test(read('api/' + f)), f + ' still reads ADMIN_PIN');
+});
 test('the game never writes player-supplied text without escaping it', () => {
   const t = read('play.html');
   for (const m of t.matchAll(/\.name\b[^;\n]{0,40}/g)) if (/innerHTML|\+\s*r\.name|\+\s*x\.name|\+\s*b\.name|\+\s*c\.name/.test(m[0]) && !/esc\(/.test(m[0])) assert.fail('unescaped name: ' + m[0]);

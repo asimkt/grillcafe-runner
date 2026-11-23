@@ -1,8 +1,10 @@
 import { test, describe, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { call, admin, sql, lib, resetDb, signUp, startRun, playRun, setCampaign, defaultCfg, eventsOf, newPhone, newIp, PIN, CRON } from './helpers.mjs';
+import { call, admin, sql, lib, resetDb, signUp, startRun, playRun, setCampaign, defaultCfg, eventsOf, newPhone, newIp, login, OWNER, MANAGER, CRON } from './helpers.mjs';
 
 const lowBar = (slots = 1) => ({ ...defaultCfg(), tiers: [{ points: 100, slots, prize: 'Test prize' }], safeZone: 0 });
+const runFlag = async r => (await sql`SELECT flagged FROM runs WHERE id = ${r.run.id}`)[0].flagged;
+const silent = r => { assert.equal(r.status, 200); assert.deepEqual(r.json, { ok: false }); };
 async function claim(p, sessionId, points = 100, tier = 0) {
   return call('tier-claim', { body: { phone: p.phone, token: p.token, sessionId, tier, points, coins: 1, secs: 4 }, ip: p.ip });
 }
@@ -110,34 +112,34 @@ describe('sign-up and account safety', () => {
 
 describe('runs and fair play', () => {
   test('a believable run is saved and not flagged', async () => {
-    const p = await signUp(); const r = await playRun(p, 3000); assert.equal(r.flagged, false); assert.equal(r.run.points, 3000);
+    const p = await signUp(); const r = await playRun(p, 3000); assert.equal(await runFlag(r), false); assert.equal(r.run.points, 3000);
   });
   test('an impossible run is flagged, logged, and kept off the leaderboard', async () => {
     const p = await signUp('Cheater'); const ses = await startRun(p);
     const r = await call('run-finish', { body: { phone: p.phone, token: p.token, sessionId: ses, points: 900000, coins: 10, metres: 1, secs: 2 }, ip: p.ip });
-    assert.equal(r.json.flagged, true);
+    assert.equal(await runFlag(r.json), true);
     const ev = await eventsOf('cheat_flag'); assert.equal(ev.length, 1); assert.equal(ev[0].phone, p.phone); assert.equal(ev[0].ip, p.ip);
     assert.equal((await call('leaderboard', { method: 'GET' })).json.overall.length, 0);
   });
   test('a session cannot be replayed to submit a second run', async () => {
     const p = await signUp(); const ses = await startRun(p, 200);
     const body = { phone: p.phone, token: p.token, sessionId: ses, points: 2000, coins: 5, metres: 3000, secs: 200 };
-    assert.equal((await call('run-finish', { body })).json.flagged, false);
-    const again = await call('run-finish', { body }); assert.equal(again.json.flagged, true);
+    assert.equal(await runFlag((await call('run-finish', { body })).json), false);
+    const again = await call('run-finish', { body }); assert.equal(await runFlag(again.json), true);
   });
   test('cannot finish another player\'s session', async () => {
     const a = await signUp('Alice'), b = await signUp('Bobby'); const ses = await startRun(a, 200);
     const r = await call('run-finish', { body: { phone: b.phone, token: b.token, sessionId: ses, points: 2000, coins: 5, metres: 1, secs: 200 } });
-    assert.equal(r.json.flagged, true);
+    assert.equal(await runFlag(r.json), true);
   });
   test('a run with no session at all is flagged', async () => {
     const p = await signUp(); const r = await call('run-finish', { body: { phone: p.phone, token: p.token, points: 5000, coins: 1, metres: 1, secs: 100 } });
-    assert.equal(r.json.flagged, true);
+    assert.equal(await runFlag(r.json), true);
   });
   test('absurd numbers and oversized event traces do not crash anything', async () => {
     const p = await signUp(); const ses = await startRun(p, 5);
     const r = await call('run-finish', { body: { phone: p.phone, token: p.token, sessionId: ses, points: 1e30, coins: -5, metres: 'x', secs: Infinity, events: Array.from({ length: 5000 }, () => ({ a: 'x'.repeat(200) })) } });
-    assert.equal(r.status, 200); assert.equal(r.json.flagged, true);
+    assert.equal(r.status, 200); assert.equal(await runFlag(r.json), true);
   });
   test('more than 6 runs started in a minute is refused', async () => {
     const p = await signUp(); for (let i = 0; i < 6; i++) await startRun(p);
@@ -148,6 +150,65 @@ describe('runs and fair play', () => {
     for (let i = 0; i < 3; i++) { const ses = await startRun(p); await call('run-finish', { body: { phone: p.phone, token: p.token, sessionId: ses, points: 99999, coins: 1, metres: 1, secs: 3 }, ip: p.ip }); await sql`DELETE FROM sessions WHERE false`; }
     const o = (await admin()).json; assert.ok(o.security.suspects.some(s => s.phone === p.phone && s.flagged >= 2));
   });
+});
+
+describe('quiet by design: nothing tells a cheater what we check', () => {
+  test('a held-back run looks exactly like a normal save', async () => {
+    const good = await playRun(await signUp('Honest'), 3000);
+    const p = await signUp('Cheater'); const bad = await call('run-finish', { body: { phone: p.phone, token: p.token, sessionId: await startRun(p), points: 900000, coins: 1, metres: 1, secs: 2 } });
+    assert.deepEqual(Object.keys(bad.json).sort(), Object.keys(good).sort());
+    assert.ok(!JSON.stringify(bad.json).match(/flag|reason|cheat|fast|impossible|session/i), JSON.stringify(bad.json));
+    assert.equal(await runFlag(bad.json), true, 'but it is held back on our side');
+  });
+  test('rejected prize claims say nothing about why', async () => {
+    await setCampaign(lowBar(5)); const a = await signUp('Alice'); const r = await claim(a, await startRun(a));
+    silent(r); assert.ok(!r.text.match(/reason|fast|session|points/i));
+  });
+  test('error messages for blocked numbers, takeovers and rate limits are vague', async () => {
+    const owner = await signUp('Owner'); await playRun(owner, 800);
+    const take = await call('register', { body: { name: 'Thief', phone: owner.phone }, ip: '66.1.1.1' });
+    await admin({ action: 'ban', phone: owner.phone });
+    const banned = await call('run-start', { body: { phone: owner.phone, token: owner.token } });
+    for (const r of [take, banned]) assert.ok(!r.text.match(/takeover|another phone|banned|blocked|unlock|detect|flag/i), r.text);
+    for (let i = 0; i < 5; i++) await call('admin', { method: 'GET', headers: { 'x-admin-user': 'asim', 'x-admin-pin': 'g' + i }, ip: '66.2.2.2' });
+    const locked = await call('admin', { method: 'GET', headers: login(OWNER), ip: '66.2.2.2' }); assert.equal(locked.status, 429); assert.ok(!locked.text.match(/lock|minutes|wrong|attempt/i), locked.text);
+  });
+});
+
+describe('where players come from (table QR codes)', () => {
+  test('the table or source is remembered from the first sign-in and counted in admin', async () => {
+    const reg = (name, ref, phone = newPhone()) => call('register', { body: { name, phone, ref }, ip: newIp() }).then(r => ({ r, phone }));
+    await reg('Alice', 'table-12'); await reg('Bobby', 'Table-12'); await reg('Chitra', 'table-3'); await reg('Dev', 'instagram'); await reg('Eesha', undefined);
+    const again = await reg('Fahad', 'table-3'); await call('register', { body: { name: 'Fahad', phone: again.phone, ref: 'table-99' }, ip: newIp() });
+    const s = (await admin()).json.sources; const by = Object.fromEntries(s.map(x => [x.source, x.players]));
+    assert.deepEqual(by, { 'table-12': 2, 'table-3': 2, instagram: 1, direct: 1 });
+  });
+  test('hostile or oversized referrers are cleaned', async () => {
+    const phone = newPhone(); await call('register', { body: { name: 'Hacker', phone, ref: "<script>alert(1)</script>'; DROP TABLE players;--" + 'x'.repeat(100) }, ip: newIp() });
+    const [p] = await sql`SELECT ref FROM players WHERE phone = ${phone}`; assert.match(p.ref, /^[a-z0-9._-]{1,20}$/);
+    assert.equal((await sql`SELECT count(*)::int AS n FROM players`)[0].n, 1);
+  });
+});
+
+describe('coupon validity', () => {
+  test('with a fixed date set, every new coupon expires at the end of that day (India time)', async () => {
+    await setCampaign({ ...lowBar(5), validUntil: '2027-01-31' });
+    const a = await signUp('Alice'); const w = await claim(a, await startRun(a, 10));
+    assert.equal(new Date(w.json.coupon.expires).toISOString(), '2027-01-31T18:29:59.000Z');
+    assert.equal((await call('stats', { method: 'GET' })).json.validUntil, '2027-01-31');
+  });
+  test('without a date, coupons last validDays from the win', async () => {
+    await setCampaign({ ...lowBar(5), validUntil: '', validDays: 3 });
+    const a = await signUp('Alice'); const w = await claim(a, await startRun(a, 10)); const days = (w.json.coupon.expires - Date.now()) / 86400000;
+    assert.ok(days > 2.9 && days < 3.1, String(days));
+  });
+  test('the top-score prize also honours the date', async () => {
+    await setCampaign({ ...defaultCfg(), grand: { prize: 'G', endsAt: '2026-01-01', endsHour: 21 }, validUntil: '2027-01-31' });
+    const a = await signUp('Alice'); await playRun(a, 3000); await sql`UPDATE runs SET created_at = '2026-01-01T10:00:00Z'`;
+    await call('cron-settle', { method: 'GET', headers: { authorization: 'Bearer ' + CRON } });
+    const [g] = await sql`SELECT expires_at FROM coupons WHERE type = 'grand'`; assert.equal(new Date(g.expires_at).toISOString(), '2027-01-31T18:29:59.000Z');
+  });
+  test('junk dates are ignored', async () => { await setCampaign({ ...defaultCfg(), validUntil: 'next friday' }); assert.equal((await call('stats', { method: 'GET' })).json.validUntil, null); });
 });
 
 describe('prizes', () => {
@@ -162,15 +223,13 @@ describe('prizes', () => {
   test('cannot claim without the points, with a fake session, or with someone else\'s session', async () => {
     await setCampaign({ ...lowBar(5), tiers: [{ points: 1000, slots: 5, prize: 'P' }] });
     const a = await signUp('Alice'), b = await signUp('Bobby'); const sa = await startRun(a, 100);
-    assert.equal((await claim(a, sa, 100)).json.reason, 'not enough points');
-    assert.equal((await claim(a, '00000000-0000-0000-0000-000000000000', 1000)).json.reason, 'unknown session');
-    assert.equal((await claim(a, 'not-a-uuid', 1000)).json.reason, 'unknown session');
-    assert.equal((await claim(b, sa, 1000)).json.reason, 'unknown session');
-    assert.equal((await claim(a, sa, 1000, 7)).json.reason, 'no such prize');
+    silent(await claim(a, sa, 100)); silent(await claim(a, '00000000-0000-0000-0000-000000000000', 1000)); silent(await claim(a, 'not-a-uuid', 1000));
+    silent(await claim(b, sa, 1000)); silent(await claim(a, sa, 1000, 7));
+    assert.equal((await sql`SELECT count(*)::int AS n FROM coupons`)[0].n, 0);
   });
   test('claiming faster than the server clock allows is rejected and logged', async () => {
     await setCampaign(lowBar(5)); const a = await signUp('Alice'); const ses = await startRun(a);   // not backdated: 0 seconds elapsed
-    const r = await claim(a, ses, 100); assert.equal(r.json.rejected, true);
+    const r = await claim(a, ses, 100); silent(r);
     assert.equal((await eventsOf('cheat_flag')).length, 1);
     assert.equal((await sql`SELECT count(*)::int AS n FROM coupons`)[0].n, 0);
   });
@@ -191,39 +250,100 @@ describe('prizes', () => {
 });
 
 describe('admin: access control', () => {
-  test('no PIN, wrong PIN and odd headers are all refused', async () => {
-    assert.equal((await call('admin', { method: 'GET', ip: '1.1.1.1' })).status, 401);
-    assert.equal((await call('admin', { method: 'GET', headers: { 'x-admin-pin': 'wrong' }, ip: '1.1.1.2' })).status, 401);
-    assert.equal((await call('admin', { method: 'GET', headers: { 'x-admin-pin': ['a', 'b'] }, ip: '1.1.1.3' })).status, 401);
-    assert.equal((await call('admin', { method: 'GET', headers: { 'x-admin-pin': PIN + ' ' }, ip: '1.1.1.4' })).status, 401);
-    assert.equal((await call('admin', { method: 'POST', body: { action: 'config', config: {} }, ip: '1.1.1.5' })).status, 401);
+  const get = (headers, ip) => call('admin', { method: 'GET', headers, ip });
+  test('no login, wrong PIN, wrong username and odd headers are all refused with the same message', async () => {
+    const bad = [{}, { 'x-admin-user': 'asim' }, { 'x-admin-pin': OWNER.pin }, { 'x-admin-user': 'asim', 'x-admin-pin': 'wrong' }, { 'x-admin-user': 'nobody', 'x-admin-pin': OWNER.pin },
+      { 'x-admin-user': ['asim'], 'x-admin-pin': [OWNER.pin] }, { 'x-admin-user': 'asim', 'x-admin-pin': OWNER.pin + ' ' }, { 'x-admin-user': "asim' OR '1'='1", 'x-admin-pin': "x' OR '1'='1" }, { 'x-admin-user': 'asim', 'x-admin-pin': MANAGER.pin }];
+    let n = 0; for (const h of bad) { const r = await get(h, '1.1.' + (n++) + '.1'); assert.equal(r.status, 401, JSON.stringify(h)); assert.equal(r.json.error, 'wrong username or PIN'); }
+    assert.equal((await call('admin', { method: 'POST', body: { action: 'config', config: {} }, ip: '1.1.1.99' })).status, 401);
   });
-  test('the correct PIN works', async () => { const r = await admin(); assert.equal(r.status, 200); assert.ok(r.json.security); assert.ok(r.json.stats); });
+  test('each person signs in with their own username and PIN; usernames are not case sensitive', async () => {
+    assert.equal((await admin(undefined, { as: OWNER })).json.me.role, 'owner');
+    assert.equal((await admin(undefined, { as: MANAGER })).json.me.role, 'manager');
+    assert.equal((await get({ 'x-admin-user': 'ASIM', 'x-admin-pin': OWNER.pin }, '1.2.3.4')).status, 200);
+  });
+  test('PINs are stored as hashes, never in plain text', async () => {
+    const rows = await sql`SELECT pin_hash FROM admin_users`; for (const r of rows) { assert.match(r.pin_hash, /^s1:[0-9a-f]{32}:[0-9a-f]{64}$/); assert.ok(![OWNER.pin, MANAGER.pin].some(p => r.pin_hash.includes(p))); }
+  });
   test('player tokens are not admin credentials', async () => {
-    const p = await signUp(); assert.equal((await call('admin', { method: 'GET', headers: { 'x-admin-pin': p.token }, ip: '1.2.3.4' })).status, 401);
+    const p = await signUp(); assert.equal((await get({ 'x-admin-user': p.phone, 'x-admin-pin': p.token }, '1.2.3.4')).status, 401);
   });
-  test('brute force: 5 wrong PINs lock that address out, even for the right PIN', async () => {
-    for (let i = 0; i < 5; i++) assert.equal((await call('admin', { method: 'GET', headers: { 'x-admin-pin': 'guess' + i }, ip: '2.2.2.2' })).status, 401);
-    assert.equal((await call('admin', { method: 'GET', headers: { 'x-admin-pin': PIN }, ip: '2.2.2.2' })).status, 429);
-    assert.equal((await call('admin', { method: 'POST', headers: { 'x-admin-pin': PIN }, body: { action: 'config', config: {} }, ip: '2.2.2.2' })).status, 429);
-    assert.equal((await admin(undefined, { ip: '3.3.3.3' })).status, 200, 'other addresses are unaffected');
+  test('brute force: 5 wrong tries from one address lock that address, even for the right PIN', async () => {
+    for (let i = 0; i < 5; i++) assert.equal((await get({ 'x-admin-user': 'asim', 'x-admin-pin': 'guess' + i }, '2.2.2.2')).status, 401);
+    assert.equal((await get(login(OWNER), '2.2.2.2')).status, 429);
+    assert.equal((await call('admin', { method: 'POST', headers: login(OWNER), body: { action: 'config', config: {} }, ip: '2.2.2.2' })).status, 429);
+    assert.equal((await get(login(MANAGER), '2.2.2.2')).status, 429, 'any username from that address');
+    assert.equal((await admin(undefined, { ip: '3.3.3.3', as: MANAGER })).status, 200, 'other addresses (signing in as someone else) are unaffected');
+    assert.equal((await admin(undefined, { ip: '3.3.3.4' })).status, 429, 'the account that was guessed at stays locked from anywhere');
     assert.equal((await eventsOf('admin_login_fail')).length, 5); assert.ok((await eventsOf('admin_locked')).length >= 1);
   });
+  test('guessing one person\'s PIN from many addresses locks that account, not the others', async () => {
+    for (let i = 0; i < 5; i++) await get({ 'x-admin-user': 'asim', 'x-admin-pin': 'guess' + i }, '6.6.6.' + i);
+    assert.equal((await get(login(OWNER), '7.7.7.7')).status, 429, 'the targeted account is locked, even for the right PIN');
+    assert.equal((await get(login(MANAGER), '7.7.7.7')).status, 200, 'other accounts still work');
+  });
+  test('failed logins record the username tried and the address, so attackers can be traced', async () => {
+    await get({ 'x-admin-user': 'root', 'x-admin-pin': 'admin123' }, '8.8.8.8');
+    const [e] = await eventsOf('admin_login_fail'); assert.equal(e.ip, '8.8.8.8'); assert.equal(e.detail.user, 'root'); assert.equal(e.detail.known, false);
+  });
   test('the lockout lifts after 15 minutes', async () => {
-    for (let i = 0; i < 5; i++) await call('admin', { method: 'GET', headers: { 'x-admin-pin': 'g' + i }, ip: '4.4.4.4' });
-    await sql`UPDATE security_events SET at = now() - interval '16 minutes' WHERE ip = '4.4.4.4'`;
+    for (let i = 0; i < 5; i++) await get({ 'x-admin-user': 'asim', 'x-admin-pin': 'g' + i }, '4.4.4.4');
+    await sql`UPDATE security_events SET at = now() - interval '16 minutes'`;
     assert.equal((await admin(undefined, { ip: '4.4.4.4' })).status, 200);
   });
-  test('a distributed attack (50 wrong PINs from many addresses) locks admin for everyone', async () => {
-    for (let i = 0; i < 50; i++) await sql`INSERT INTO security_events (kind, ip) VALUES ('admin_login_fail', ${'8.8.' + i + '.1'})`;
+  test('a distributed attack (50 wrong tries from many addresses) locks admin for everyone', async () => {
+    for (let i = 0; i < 50; i++) await sql`INSERT INTO security_events (kind, ip, detail) VALUES ('admin_login_fail', ${'8.8.' + i + '.1'}, ${JSON.stringify({ user: 'u' + i })}::jsonb)`;
     assert.equal((await admin(undefined, { ip: '9.9.9.200' })).status, 429);
   });
-  test('admin refuses to run with a weak or missing PIN configured', async () => {
-    const was = process.env.ADMIN_PIN;
-    try {
-      for (const weak of ['', '1234', '1234567']) { process.env.ADMIN_PIN = weak; assert.equal((await call('admin', { method: 'GET', headers: { 'x-admin-pin': weak }, ip: '5.5.5.5' })).status, 503, `"${weak}"`); }
-      delete process.env.ADMIN_PIN; assert.equal((await call('admin', { method: 'GET', headers: {}, ip: '5.5.5.5' })).status, 503);
-    } finally { process.env.ADMIN_PIN = was; }
+  test('a disabled account cannot sign in, and can again once re-enabled', async () => {
+    assert.equal((await admin({ action: 'disable_user', username: 'mgr' })).status, 200);
+    assert.equal((await admin(undefined, { as: MANAGER, ip: '5.5.5.5' })).status, 401);
+    await sql`DELETE FROM security_events`;
+    assert.equal((await admin({ action: 'disable_user', username: 'mgr', value: false })).status, 200);
+    assert.equal((await admin(undefined, { as: MANAGER, ip: '5.5.5.6' })).status, 200);
+  });
+  test('an owner cannot disable their own account', async () => assert.equal((await admin({ action: 'disable_user', username: 'asim' })).status, 400));
+  test('with no accounts at all, nobody gets in', async () => {
+    await sql`DELETE FROM admin_users`; assert.equal((await admin(undefined, { ip: '5.6.7.8' })).status, 401);
+  });
+});
+
+describe('admin: roles and PINs', () => {
+  test('manager can run the day-to-day: redeem, approve runs, ban, unlock a customer, read security', async () => {
+    await setCampaign(lowBar(5)); const a = await signUp('Alice'); const w = await claim(a, await startRun(a, 10));
+    for (const body of [{ action: 'redeem', code: w.json.coupon.code, value: true }, { action: 'reset_player', phone: a.phone }, { action: 'ban', phone: a.phone }, { action: 'ban', phone: a.phone, value: false }])
+      assert.equal((await admin(body, { as: MANAGER })).status, 200, body.action);
+    assert.ok((await admin(undefined, { as: MANAGER })).json.security);
+  });
+  test('manager cannot change prize settings, award the top-score prize, or disable accounts', async () => {
+    for (const body of [{ action: 'config', config: { tiers: [{ points: 100, slots: 999, prize: 'Free everything' }] } }, { action: 'grand' }, { action: 'disable_user', username: 'asim' }])
+      assert.equal((await admin(body, { as: MANAGER })).status, 403, body.action);
+    assert.equal((await call('stats', { method: 'GET' })).json.tiers[0].prize, 'Free shawarma', 'settings untouched');
+    assert.equal((await eventsOf('admin_denied')).length, 3);
+  });
+  test('only the owner sees the account list', async () => {
+    assert.equal((await admin(undefined, { as: OWNER })).json.users.length, 2); assert.equal((await admin(undefined, { as: MANAGER })).json.users.length, 0);
+  });
+  test('you can change your own PIN; the old one stops working at once', async () => {
+    assert.equal((await admin({ action: 'set_pin', pin: 'brand-new-pin-99' }, { as: MANAGER })).status, 200);
+    assert.equal((await admin(undefined, { as: MANAGER, ip: '3.1.1.1' })).status, 401);
+    assert.equal((await call('admin', { method: 'GET', headers: { 'x-admin-user': 'mgr', 'x-admin-pin': 'brand-new-pin-99' }, ip: '3.1.1.2' })).status, 200);
+  });
+  test('PINs shorter than 8 characters are refused', async () => {
+    for (const pin of ['', '1234', '1234567', undefined, 12345678]) assert.equal((await admin({ action: 'set_pin', pin }, { as: MANAGER })).status, 400, String(pin));
+    assert.equal((await admin(undefined, { as: MANAGER })).status, 200, 'old PIN still valid');
+  });
+  test('owner can reset someone else\'s PIN and gets a new random one once; manager cannot do that to others', async () => {
+    const r = await admin({ action: 'set_pin', username: 'mgr' }); assert.equal(r.status, 200); assert.match(r.json.pin, /^\d{8}$/);
+    assert.equal((await admin(undefined, { as: MANAGER, ip: '3.2.2.2' })).status, 401);
+    assert.equal((await call('admin', { method: 'GET', headers: { 'x-admin-user': 'mgr', 'x-admin-pin': r.json.pin }, ip: '3.2.2.3' })).status, 200);
+    await sql`DELETE FROM security_events`;
+    assert.equal((await admin({ action: 'set_pin', username: 'asim', pin: 'takeover-attempt-1' }, { as: { user: 'mgr', pin: r.json.pin } })).status, 403);
+    assert.equal((await admin({ action: 'set_pin', username: 'ghost' })).status, 404);
+  });
+  test('PINs never appear in the audit log', async () => {
+    await admin({ action: 'set_pin', pin: 'super-secret-pin-1' }, { as: MANAGER }); const r = await admin({ action: 'set_pin', username: 'mgr' });
+    const log = JSON.stringify(await sql`SELECT * FROM security_events`); assert.ok(!log.includes('super-secret-pin-1')); assert.ok(!log.includes(r.json.pin));
   });
 });
 
@@ -256,7 +376,7 @@ describe('admin: working properly', () => {
   test('a flagged run can be approved and then counts', async () => {
     const p = await signUp('Alice'); const ses = await startRun(p);
     const r = await call('run-finish', { body: { phone: p.phone, token: p.token, sessionId: ses, points: 4000, coins: 1, metres: 1, secs: 3 } });
-    assert.equal(r.json.flagged, true);
+    assert.equal(await runFlag(r.json), true);
     await admin({ action: 'unflag', id: Number(r.json.run.id) });
     assert.equal((await call('leaderboard', { method: 'GET' })).json.overall[0].points, 4000);
   });
@@ -282,7 +402,7 @@ describe('admin: working properly', () => {
   test('every admin change is written to the audit log with the address', async () => {
     const a = await signUp('Alice');
     await admin({ action: 'ban', phone: a.phone }, { ip: '12.12.12.12' }); await admin({ action: 'config', config: {} }, { ip: '12.12.12.12' });
-    const log = await eventsOf('admin_action'); assert.deepEqual(log.map(e => e.detail.action), ['ban', 'config']); assert.ok(log.every(e => e.ip === '12.12.12.12'));
+    const log = await eventsOf('admin_action'); assert.deepEqual(log.map(e => e.detail.action), ['ban', 'config']); assert.ok(log.every(e => e.ip === '12.12.12.12' && e.detail.by === 'asim'));
   });
   test('many numbers from one network are surfaced as a cluster', async () => {
     for (let i = 0; i < 6; i++) await signUp('Fan' + i, '99.99.99.99');

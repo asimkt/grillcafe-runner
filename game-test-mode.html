@@ -241,7 +241,7 @@ function defaultCampaign() {
     tiers: [{ points: 10000, slots: 20, prize: 'Free shawarma' }, { points: 20000, slots: 10, prize: '₹200 off' }, { points: 30000, slots: 5, prize: '₹500 off' }],
     grand: { prize: '₹2,000 off', endsAt: dayKey(Date.now() + 30 * DAY), endsHour: 21 },
     daily: { on: false, prize: '₹1,000 off' },
-    sceneLen: 1000, safeZone: 500, validDays: 7
+    sceneLen: 1000, safeZone: 500, validDays: 7, validUntil: ''
   };
 }
 // Cleans an admin-edited campaign. The server runs the same function.
@@ -255,7 +255,8 @@ function cleanCampaign(c) {
     tiers: tiers.length ? tiers : d.tiers,
     grand: { prize: txt(g.prize, d.grand.prize), endsAt: /^\d{4}-\d{2}-\d{2}$/.test(g.endsAt || '') ? g.endsAt : d.grand.endsAt, endsHour: n(g.endsHour, 0, 23, 21) },
     daily: { on: !!dl.on, prize: txt(dl.prize, d.daily.prize) },
-    sceneLen: n(c.sceneLen, 50, 100000, 1000), safeZone: n(c.safeZone, 0, 5000, 500), validDays: n(c.validDays, 1, 90, 7)
+    sceneLen: n(c.sceneLen, 50, 100000, 1000), safeZone: n(c.safeZone, 0, 5000, 500), validDays: n(c.validDays, 1, 90, 7),
+    validUntil: /^\d{4}-\d{2}-\d{2}$/.test(c.validUntil || '') ? c.validUntil : ''
   };
 }
 // Returns a reason string when a run looks impossible.
@@ -350,10 +351,10 @@ const mockApi = {
   },
   async claimTier(phone, sessionId, ti, s) {
     const C = DB.config, tier = C.tiers[ti], ses = SESSIONS[sessionId];
-    if (!tier) return { rejected: true, reason: 'no such prize' };
+    if (!tier) return { ok: false };
     const why = judgeRun(s, ses ? (Date.now() - ses.started) / 1000 : null);
-    if (why || !ses || ses.phone !== phone) return { rejected: true, reason: why || 'unknown session' };
-    if (s.points < tier.points - C.safeZone) return { rejected: true, reason: 'not enough points' };
+    if (why || !ses || ses.phone !== phone) return { ok: false };
+    if (s.points < tier.points - C.safeZone) return { ok: false };
     const mine = DB.coupons.find(c => c.type === 'tier' && c.tier === ti && c.phone === phone);
     if (mine) return { already: true, coupon: mine };
     const n = DB.coupons.filter(c => c.type === 'tier' && c.tier === ti).length;
@@ -382,7 +383,7 @@ const mockApi = {
     return { day: today, daily: top(r => dayKey(r.ts) === today), overall: top(() => true), updatedAt: Date.now() };
   },
   async adminOverview(pin) {
-    if (pin !== DB.pin) throw authErr();
+    if ((typeof pin === 'object' ? pin.p : pin) !== DB.pin) throw authErr();
     settle();
     const best = {};
     for (const r of DB.runs) {
@@ -392,14 +393,14 @@ const mockApi = {
       if (r.points > b.points) { b.points = r.points; b.coins = r.coins; }
     }
     return {
-      stats: mockStats(), config: DB.config, security: { events: [], suspects: [], clusters: [], banned: [] },
+      me: { username: 'test', role: 'owner', name: 'Test' }, users: [], sources: [], stats: mockStats(), config: DB.config, security: { events: [], suspects: [], clusters: [], banned: [] },
       leaderboard: Object.values(best).sort((a, b) => b.points - a.points),
       coupons: DB.coupons.slice().sort((a, b) => b.ts - a.ts).map(c => Object.assign({ name: pname(c.phone) }, c)),
       runs: DB.runs.slice().sort((a, b) => b.ts - a.ts).slice(0, 30).map(r => Object.assign({ name: pname(r.phone) }, r))
     };
   },
   async adminAction(pin, a) {
-    if (pin !== DB.pin) throw authErr();
+    if ((typeof pin === 'object' ? pin.p : pin) !== DB.pin) throw authErr();
     if (a.action === 'redeem') { const c = DB.coupons.find(x => x.code === a.code); if (c) c.redeemed = !!a.value; }
     else if (a.action === 'config') DB.config = cleanCampaign(a.config || {});
     else if (a.action === 'unflag') { const r = DB.runs.find(x => x.id === a.id); if (r) { r.flagged = false; r.reason = 'approved'; } }
@@ -415,7 +416,7 @@ const mockApi = {
 /* ================= backend: server (Vercel + Neon) ================= */
 async function req(path, body, pin) {
   const headers = { 'Content-Type': 'application/json' };
-  if (pin) headers['x-admin-pin'] = pin;
+  if (pin) { if (typeof pin === 'object') { headers['x-admin-user'] = pin.u; headers['x-admin-pin'] = pin.p; } else headers['x-admin-pin'] = pin; }
   const r = await fetch(CONFIG.apiBase + path, { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined });
   if (r.status === 401) throw authErr();
   if (!r.ok) {
@@ -426,9 +427,11 @@ async function req(path, body, pin) {
   return r.json();
 }
 const tok = () => (ME && ME.token) || '';
+// where this player came from: a table QR (/t/12 on the landing page becomes ?t=12 here) or ?src=instagram
+const REF = (() => { try { const q = new URLSearchParams(location.search); return String(q.get('t') ? 'table-' + q.get('t') : q.get('src') || '').toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 20); } catch (e) { return ''; } })();
 const serverApi = {
   stats: () => req('/stats'),
-  register: (name, phone) => req('/register', { name, phone, token: lsGet('grillcafe-tok-' + phone, '') }),
+  register: (name, phone) => req('/register', { name, phone, token: lsGet('grillcafe-tok-' + phone, ''), ref: REF }),
   leaderboard: () => req('/leaderboard?live=1'),
   startRun: phone => req('/run-start', { phone, token: tok() }),
   claimTier: (phone, sessionId, tier, s) => req('/tier-claim', Object.assign({}, s, { phone, sessionId, tier, token: tok() })),
@@ -1725,7 +1728,6 @@ function claimBlock(r, ti) {
   if (r.won) return ticket(r.coupon, 'You’re winner #' + r.rank + ' of ' + tr.slots + ': ' + esc(tr.prize));
   if (r.already) return '<p class="rule">You already won this prize (code <b>' + esc(r.coupon.code) + '</b>). One per person.</p>';
   if (r.soldOut) return '<p class="rule">All ' + tr.slots + ' of the “' + esc(tr.prize) + '” prizes are claimed. Keep going for the next one.</p>';
-  if (r.rejected) return '<p class="rule">We couldn’t confirm this run, so the cafe team will check it before any prize.</p>';
   if (r.error) return '<p class="rule">Couldn’t reach the server to lock your prize. Check your connection, then show this screen at the counter.</p>';
   return '';
 }
@@ -1759,7 +1761,6 @@ async function endRun(saved) {
   if (ti >= 0) html += '<p class="rule"><b>' + fmt(Math.max(0, tiers[ti].points - safeZone - s.points)) + '</b> more points and the poocha turns super, with <b>' + esc(tiers[ti].prize) + '</b> waiting at ' + fmt(tiers[ti].points) + '.</p>';
   if (res && res.top) html += '<p class="rule">🔥 <b>You have the top score!</b> Hold it till ' + endDate() + ' to win ' + esc(grandPrize()) + '.</p>';
   if (res && res.leading) html += '<p class="rule">You’re today’s leader. Hold the top spot till midnight for ' + esc((campaign && campaign.daily.prize) || '') + '.</p>';
-  if (res && res.flagged) html += '<p class="rule">This run will be checked by the cafe team before it counts.</p>';
   if (res && res.error) html += '<p class="rule">Couldn’t save this run. Check your connection.</p>';
   html += '<button class="primary" data-act="go">Run again</button><div class="row2"><button class="link" data-act="menu">Menu</button><button class="link" data-act="board">Leaderboard</button><button class="link" data-act="coupons">My coupons</button></div>';
   card.innerHTML = html; canStart = false; setTimeout(() => { canStart = true; }, 600);
@@ -1849,24 +1850,25 @@ muteBtn.addEventListener('click', () => { auInit(); setMute(!AU.muted); });
 setMute(AU.muted);
 
 /* ================= admin ================= */
-let adminPin = null;
-try { adminPin = sessionStorage.getItem('grillcafe-admin'); } catch (e) {}
+let adminPin = null;   // { u: username, p: PIN }, kept only for this browser tab
+try { const raw = sessionStorage.getItem('grillcafe-admin'); adminPin = raw ? JSON.parse(raw) : null; if (!adminPin || !adminPin.u || !adminPin.p) adminPin = null; } catch (e) { adminPin = null; }
+const setAdminPin = v => { adminPin = v; try { if (v) sessionStorage.setItem('grillcafe-admin', JSON.stringify(v)); else sessionStorage.removeItem('grillcafe-admin'); } catch (e) {} };
 async function renderAdmin() {
   if (!adminPin) {
     adminEl.innerHTML = '<div class="adm-gate">' + MARK + '<h2>Campaign admin</h2>' +
-      '<form id="pinf"><label>PIN<input id="pin" type="password" inputmode="numeric" autocomplete="off"></label>' +
-      '<p class="err" id="perr" hidden>Wrong PIN.</p><button class="primary" type="submit">Open admin</button></form>' +
-      (CONFIG.backend === 'server' ? '' : '<p class="fine">Test PIN: 2026</p>') + '<p><a class="link" href="#">Back to game</a></p></div>';
+      '<form id="pinf"><label>Username<input id="usr" autocomplete="username" autocapitalize="none" spellcheck="false"></label><label>PIN<input id="pin" type="password" inputmode="numeric" autocomplete="current-password"></label>' +
+      '<p class="err" id="perr" hidden>Wrong username or PIN.</p><button class="primary" type="submit">Open admin</button></form>' +
+      (CONFIG.backend === 'server' ? '' : '<p class="fine">Test login: any username, PIN 2026</p>') + '<p><a class="link" href="#">Back to game</a></p></div>';
     return;
   }
   adminEl.innerHTML = '<div class="adm"><div class="spin"></div></div>';
   let d;
   try { d = await api.adminOverview(adminPin); }
   catch (e) {
-    if (e.auth) { adminPin = null; try { sessionStorage.removeItem('grillcafe-admin'); } catch (er) {} renderAdmin(); return; }
+    if (e.auth) { setAdminPin(null); renderAdmin(); return; }
     adminEl.innerHTML = '<div class="adm"><p class="note">Couldn’t load admin data: ' + esc(e.message) + '</p><a class="link" href="#">Back to game</a></div>'; return;
   }
-  const st = d.stats, C = d.config, now = Date.now();
+  const st = d.stats, C = d.config, now = Date.now(), me = d.me || { role: 'owner' }, owner = me.role === 'owner';
   adminTiers = C.tiers.map(x => Object.assign({}, x));
   const tierRow = (tr, i) => '<div class="tedit" data-i="' + i + '"><label>Points<input data-f="points" type="number" min="100" step="500" value="' + tr.points + '"></label>' +
     '<label>Winners<input data-f="slots" type="number" min="0" value="' + tr.slots + '"></label>' +
@@ -1874,6 +1876,7 @@ async function renderAdmin() {
     '<button type="button" class="small-btn" data-rm="' + i + '" aria-label="Remove prize level">✕</button></div>';
   adminEl.innerHTML = '<div class="adm"><div class="adm-head">' + BRAND + '<a class="link" href="#">Back to game</a></div>' +
     '<h2>Campaign admin</h2>' +
+    '<p class="note">Signed in as <b>' + esc(me.name || me.username || '') + '</b> (' + esc(me.role) + ').</p>' +
     '<p class="note">' + (CONFIG.backend === 'server' ? 'Live data from the Neon database.' : 'Test mode: mock data saved in this browser only. Switch the backend flag to "server" to use Neon.') + '</p>' +
     '<div class="tiles">' +
     '<div class="tile"><b>' + st.players + '</b><span>players</span></div>' +
@@ -1883,19 +1886,20 @@ async function renderAdmin() {
     '<div class="tile"><b>' + st.redeemed + ' / ' + st.coupons + '</b><span>coupons redeemed</span></div>' +
     '<div class="tile"><b>' + (st.flagged || 0) + '</b><span>runs flagged for review</span></div>' +
     '</div>' +
-    '<h3>Prize levels</h3><form id="setf" class="set" style="display:block">' +
+    (owner ? '<h3>Prize levels</h3><form id="setf" class="set" style="display:block">' +
     '<div id="tlist">' + adminTiers.map(tierRow).join('') + '</div>' +
     '<p><button type="button" class="small-btn" data-act="addtier">+ Add prize level</button></p>' +
     '<div class="tedit" style="grid-template-columns:2fr 1fr"><label>Top score prize<input id="gPrize" maxlength="40" value="' + esc(C.grand.prize) + '"></label><label>Race closes (date)<input id="gEnd" type="date" value="' + C.grand.endsAt + '"></label></div>' +
     '<div class="tedit" style="grid-template-columns:1fr 2fr"><label>Closes at (hour, 24h India time)<input id="gHour" type="number" min="0" max="23" value="' + (C.grand.endsHour == null ? 21 : C.grand.endsHour) + '"></label><p class="fine" style="align-self:end">Scores after this time still earn level prizes but not the top-score prize. 21 = 9 PM.</p></div>' +
     '<div class="tedit" style="grid-template-columns:auto 2fr"><label><input id="dOn" type="checkbox" style="width:auto;display:inline;margin-right:6px"' + (C.daily.on ? ' checked' : '') + '>Daily record prize</label><label>Daily prize<input id="dPrize" maxlength="40" value="' + esc(C.daily.prize) + '"></label></div>' +
     '<div class="tedit" style="grid-template-columns:1fr 1fr 1fr"><label>Points per scene<input id="sScene" type="number" min="50" step="50" value="' + C.sceneLen + '"></label><label>Super zone before a prize<input id="sSafe" type="number" min="0" step="50" value="' + C.safeZone + '"></label><label>Coupon valid (days)<input id="sDays" type="number" min="1" value="' + C.validDays + '"></label></div>' +
+    '<div class="tedit" style="grid-template-columns:1fr 2fr"><label>Coupons valid until (date)<input id="sUntil" type="date" value="' + (C.validUntil || '') + '"></label><p class="fine" style="align-self:end">If set, every new coupon expires at the end of this day (India time) and the days above are ignored. Leave empty to use days.</p></div>' +
     '<button class="primary" type="submit">Save settings</button></form>' +
-    '<p class="fine">To test quickly: prize levels at 1,000 / 2,000 / 3,000 and 100 points per scene shows every scene, the breather tree and all three prizes in a few minutes. Set them back afterwards.</p>' +
+    '<p class="fine">To test quickly: prize levels at 1,000 / 2,000 / 3,000 and 100 points per scene shows every scene, the breather tree and all three prizes in a few minutes. Set them back afterwards.</p>' : '<p class="note">Prize settings can only be changed by the owner.</p>') +
     '<h3>Top scorers</h3><div class="tw"><table><thead><tr><th>#</th><th>Name</th><th>Mobile</th><th class="n">Best points</th><th class="n">Coins</th><th class="n">Runs</th><th>Last played</th></tr></thead><tbody>' +
     d.leaderboard.map((r, i) => '<tr><td>' + (i + 1) + '</td><td>' + esc(r.name || '—') + '</td><td>' + esc(r.phone) + '</td><td class="n">' + fmt(r.points) + '</td><td class="n">' + fmt(r.coins) + '</td><td class="n">' + r.runs + '</td><td>' + dTime(r.last) + '</td></tr>').join('') +
     '</tbody></table></div>' +
-    '<p><button class="small-btn" data-act="grand">Award top score prize now</button> <span class="fine">Happens automatically the day after the campaign ends.</span></p>' +
+    (owner ? '<p><button class="small-btn" data-act="grand">Award top score prize now</button> <span class="fine">Happens automatically after the race closes.</span></p>' : '') +
     '<h3>Coupons</h3><div class="tw"><table><thead><tr><th>Code</th><th>Prize</th><th>For</th><th>Name</th><th>Mobile</th><th>Issued</th><th>Valid till</th><th>Status</th><th></th></tr></thead><tbody>' +
     d.coupons.map(c => {
       const s = c.banned ? 'BANNED: do not honour' : c.redeemed ? 'Redeemed' : c.expires < now ? 'Expired' : 'Active';
@@ -1906,7 +1910,9 @@ async function renderAdmin() {
     d.runs.map(r => '<tr><td>' + dTime(r.ts) + '</td><td>' + esc(r.name || '—') + '</td><td class="n">' + fmt(r.points) + '</td><td class="n">' + fmt(r.coins) + '</td><td class="n">' + Math.floor(r.secs / 60) + 'm ' + pad(r.secs % 60) + 's</td><td class="n">' + (r.secs ? (r.points / r.secs).toFixed(1) : '—') + '</td><td>' +
       (r.flagged ? '<span class="tag warn">' + esc(r.reason || 'flagged') + '</span> <button class="small-btn" data-unflag="' + r.id + '">Approve</button>' : '<span class="tag on">OK</span>') + '</td></tr>').join('') +
     '</tbody></table></div>' +
+    sourcesHtml(d.sources) +
     securityHtml(d.security) +
+    accountHtml(me, d.users) +
     '<h3>Tools</h3><p>' + (CONFIG.backend === 'server' ? '' : '<button class="small-btn danger" data-act="reset">Reset mock data</button> ') + '<button class="small-btn" data-act="lock">Lock admin</button></p></div>';
 }
 const EVENT_LABEL = {
@@ -1933,6 +1939,21 @@ function securityHtml(sec) {
     (sec.events.length ? sec.events.map(e => '<tr><td>' + dTime(e.ts) + '</td><td>' + (BAD_EVENTS.includes(e.kind) ? '<span class="tag warn">' : '<span class="tag on">') + esc(EVENT_LABEL[e.kind] || e.kind) + '</span></td><td>' + esc(e.phone || '—') + '</td><td>' + esc(e.ip || '—') + '</td><td>' + esc(det(e.detail)) + '</td></tr>').join('') : '<tr><td colspan="5">No events yet.</td></tr>') +
     '</tbody></table></div>';
 }
+function sourcesHtml(src) {
+  if (!src || !src.length) return '';
+  return '<h3>Where players come from</h3><p class="note">Table QR codes and links, counted when someone signs up to play. “direct” means no table or source in the link.</p><div class="tw"><table><thead><tr><th>Table or source</th><th class="n">Players</th><th class="n">Runs</th><th class="n">Prizes won</th></tr></thead><tbody>' +
+    src.map(x => '<tr><td>' + esc(x.source) + '</td><td class="n">' + x.players + '</td><td class="n">' + x.runs + '</td><td class="n">' + x.prizes + '</td></tr>').join('') + '</tbody></table></div>';
+}
+function accountHtml(me, users) {
+  let h = '<h3>Accounts</h3><form id="mypin" class="set" style="display:block"><div class="tedit" style="grid-template-columns:2fr auto"><label>Change my PIN (8 or more characters)<input id="newpin" type="password" autocomplete="new-password" minlength="8"></label><button type="button" class="small-btn" data-act="mypin">Change PIN</button></div></form>';
+  if (me.role === 'owner' && users && users.length) {
+    h += '<div class="tw"><table><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Last sign-in</th><th></th></tr></thead><tbody>' +
+      users.map(u => '<tr><td><b>' + esc(u.username) + '</b></td><td>' + esc(u.display_name) + '</td><td>' + esc(u.role) + '</td><td>' + (u.last_login ? dTime(u.last_login) : 'never') + '</td><td>' +
+        (u.username === me.username ? '<span class="tag on">You</span>' : '<button class="small-btn" data-upin="' + esc(u.username) + '">Reset PIN</button> <button class="small-btn' + (u.disabled ? '' : ' danger') + '" data-utoggle="' + esc(u.username) + '" data-v="' + (u.disabled ? '0' : '1') + '">' + (u.disabled ? 'Enable' : 'Disable') + '</button>') + '</td></tr>').join('') +
+      '</tbody></table></div><p class="note" id="pinbox" style="font-size:18px"></p>';
+  }
+  return h;
+}
 let adminTiers = [];
 function readTierRows() {
   return [...adminEl.querySelectorAll('#tlist .tedit')].map(row => ({
@@ -1942,17 +1963,17 @@ function readTierRows() {
 adminEl.addEventListener('submit', async e => {
   e.preventDefault();
   if (e.target.id === 'pinf') {
-    const pin = adminEl.querySelector('#pin').value;
-    try { await api.adminOverview(pin); adminPin = pin; try { sessionStorage.setItem('grillcafe-admin', pin); } catch (er) {} renderAdmin(); }
+    const pin = { u: adminEl.querySelector('#usr').value.trim().toLowerCase(), p: adminEl.querySelector('#pin').value };
+    try { await api.adminOverview(pin); setAdminPin(pin); renderAdmin(); }
     catch (er) {
       const pe = adminEl.querySelector('#perr');
-      pe.textContent = er.status === 429 || er.status === 503 ? er.message : 'Wrong PIN.'; pe.hidden = false;
+      pe.textContent = er.status === 429 ? 'Please try again later.' : 'Wrong username or PIN.'; pe.hidden = false;
     }
   } else if (e.target.id === 'setf') {
     const q = id => adminEl.querySelector(id);
     const config = cleanCampaign({
       tiers: readTierRows(), grand: { prize: q('#gPrize').value, endsAt: q('#gEnd').value, endsHour: q('#gHour').value }, daily: { on: q('#dOn').checked, prize: q('#dPrize').value },
-      sceneLen: q('#sScene').value, safeZone: q('#sSafe').value, validDays: q('#sDays').value
+      sceneLen: q('#sScene').value, safeZone: q('#sSafe').value, validDays: q('#sDays').value, validUntil: q('#sUntil').value
     });
     try { await api.adminAction(adminPin, { action: 'config', config }); toast('Settings saved', 1800); } catch (er) { toast('Couldn’t save: ' + er.message, 2500); }
     refreshStats(); renderAdmin();
@@ -1967,7 +1988,20 @@ adminEl.addEventListener('click', async e => {
     div.innerHTML = '<div class="tedit"><label>Points<input data-f="points" type="number" min="100" step="500" value="' + (lastPts + 10000) + '"></label><label>Winners<input data-f="slots" type="number" min="0" value="3"></label><label>Prize<input data-f="prize" maxlength="40" value=""></label><button type="button" class="small-btn" data-rm="x" aria-label="Remove prize level">✕</button></div>';
     adminEl.querySelector('#tlist').appendChild(div.firstChild); return;
   }
-  const act = async a => { try { await api.adminAction(adminPin, a); return true; } catch (er) { if (er.auth) { adminPin = null; try { sessionStorage.removeItem('grillcafe-admin'); } catch (x) {} renderAdmin(); } else toast(er.message, 3000); return false; } };
+  const act = async a => { try { return (await api.adminAction(adminPin, a)) || true; } catch (er) { if (er.auth) { setAdminPin(null); renderAdmin(); } else toast(er.message, 3000); return false; } };
+  if (b.dataset.act === 'mypin') {
+    const np = adminEl.querySelector('#newpin').value;
+    if (np.length < 8) { toast('Use at least 8 characters', 2500); return; }
+    if (await act({ action: 'set_pin', pin: np })) { setAdminPin({ u: adminPin.u, p: np }); adminEl.querySelector('#newpin').value = ''; toast('PIN changed', 2200); }
+    return;
+  }
+  if (b.dataset.upin) {
+    if (!confirm('Reset the PIN for ' + b.dataset.upin + '? Their old PIN stops working now.')) return;
+    const r = await act({ action: 'set_pin', username: b.dataset.upin });
+    if (r && r.pin) adminEl.querySelector('#pinbox').textContent = 'New PIN for ' + r.username + ': ' + r.pin + '   (shown once, tell them privately)';
+    return;
+  }
+  if (b.dataset.utoggle) { if (await act({ action: 'disable_user', username: b.dataset.utoggle, value: b.dataset.v === '1' })) renderAdmin(); return; }
   if (b.dataset.sec) {
     const ph = (adminEl.querySelector('#secPhone').value || '').replace(/\D/g, '');
     if (!/^[6-9]\d{9}$/.test(ph)) { toast('Enter the 10-digit mobile number first', 2500); return; }
@@ -1985,7 +2019,7 @@ adminEl.addEventListener('click', async e => {
   else if (b.dataset.unflag) { if (await act({ action: 'unflag', id: Number(b.dataset.unflag) })) renderAdmin(); }
   else if (b.dataset.act === 'grand') { if (confirm('Give the top score prize to the current #1 now? This can only happen once.')) { const r = await api.adminAction(adminPin, { action: 'grand' }); if (r && r.ok === false) toast(r.error || 'Not awarded', 2500); renderAdmin(); } }
   else if (b.dataset.act === 'reset') { if (confirm('Reset all mock players, runs and coupons?')) { await api.adminAction(adminPin, { action: 'reset' }); refreshStats(); renderAdmin(); } }
-  else if (b.dataset.act === 'lock') { adminPin = null; try { sessionStorage.removeItem('grillcafe-admin'); } catch (er) {} renderAdmin(); }
+  else if (b.dataset.act === 'lock') { setAdminPin(null); renderAdmin(); }
 });
 function route() {
   const isAdmin = location.hash === '#admin';
@@ -2044,5 +2078,6 @@ requestAnimationFrame(frame);
 })();
 
 </script>
+<script defer src="/_vercel/insights/script.js"></script>
 </body>
 </html>

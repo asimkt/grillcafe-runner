@@ -43,5 +43,11 @@
       "destination": "/play#admin",
       "permanent": false
     }
+  ],
+  "rewrites": [
+    {
+      "source": "/t/:n",
+      "destination": "/"
+    }
   ]
 }

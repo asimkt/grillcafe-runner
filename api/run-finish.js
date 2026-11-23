@@ -14,7 +14,7 @@ export default handler(['POST'], async (req, res, b) => {
     VALUES (${ses && !ses.finished_at ? ses.id : null}, ${p.phone}, ${s.points}, ${s.coins}, ${s.metres}, ${s.secs},
             ${int(b.livesUsed, 100)}, ${int(b.powerups, 1000)}, ${events}::jsonb, ${!!why}, ${why}, ${ip})
     ON CONFLICT (session_id) DO NOTHING
-    RETURNING id, points, coins, metres, secs, flagged, created_at`;
+    RETURNING id, points, coins, metres, secs, created_at`;
   if (ses && !ses.finished_at) await sql`UPDATE sessions SET finished_at = now() WHERE id = ${ses.id}`;
   const run = rows[0] || null;
   if (why) {
@@ -24,7 +24,7 @@ export default handler(['POST'], async (req, res, b) => {
   }
   const after = await stats();
   send(res, 200, {
-    run, best: before.best ? before.best.points : 0, flagged: !!why,
+    run, best: before.best ? before.best.points : 0,
     top: !!(run && after.best && after.best.id === Number(run.id)),
     leading: !!(run && after.leader && after.leader.id === Number(run.id))
   });

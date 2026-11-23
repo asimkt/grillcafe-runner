@@ -42,7 +42,7 @@ export function defaultCampaign() {
   return {
     tiers: [{ points: 10000, slots: 20, prize: 'Free shawarma' }, { points: 20000, slots: 10, prize: '₹200 off' }, { points: 30000, slots: 5, prize: '₹500 off' }],
     grand: { prize: '₹2,000 off', endsAt: end, endsHour: 21 }, daily: { on: false, prize: '₹1,000 off' },
-    sceneLen: 1000, safeZone: 500, validDays: 7
+    sceneLen: 1000, safeZone: 500, validDays: 7, validUntil: ''
   };
 }
 // Same as cleanCampaign in index.html.
@@ -56,11 +56,14 @@ export function cleanCampaign(c) {
     tiers: tiers.length ? tiers : d.tiers,
     grand: { prize: txt(g.prize, d.grand.prize), endsAt: /^\d{4}-\d{2}-\d{2}$/.test(g.endsAt || '') ? g.endsAt : d.grand.endsAt, endsHour: n(g.endsHour, 0, 23, 21) },
     daily: { on: !!dl.on, prize: txt(dl.prize, d.daily.prize) },
-    sceneLen: n(c.sceneLen, 50, 100000, 1000), safeZone: n(c.safeZone, 0, 5000, 500), validDays: n(c.validDays, 1, 90, 7)
+    sceneLen: n(c.sceneLen, 50, 100000, 1000), safeZone: n(c.safeZone, 0, 5000, 500), validDays: n(c.validDays, 1, 90, 7),
+    validUntil: /^\d{4}-\d{2}-\d{2}$/.test(c.validUntil || '') ? c.validUntil : ''
   };
 }
 // The moment the top-score race closes: the end date at endsHour o'clock India time (default 9 PM). Runs after it don't count for the top-score prize.
 export const cutoffIso = cfg => new Date(`${cfg.grand.endsAt}T${String(cfg.grand.endsHour).padStart(2, '0')}:00:00+05:30`).toISOString();
+// When a new coupon expires: the fixed date in settings (end of that day, India time) if one is set, otherwise validDays from now.
+export const expiryIso = cfg => cfg.validUntil ? new Date(`${cfg.validUntil}T23:59:59+05:30`).toISOString() : new Date(Date.now() + cfg.validDays * 86400000).toISOString();
 export async function getConfig() {
   const rows = await sql`SELECT value FROM config WHERE key = 'campaign'`;
   let c = {}; try { c = rows[0] ? JSON.parse(rows[0].value) : {}; } catch (e) { c = {}; }
@@ -112,35 +115,46 @@ export async function auth(phone, token, req) {
     await logEvent('bad_token', ip, phone, {}, 30);
     throw fail(401, 'sign in again');
   }
-  if (p.banned_at) { await logEvent('banned_access', ip, phone, {}, 300); throw fail(403, 'This number has been blocked by the cafe team.'); }
+  if (p.banned_at) { await logEvent('banned_access', ip, phone, {}, 300); throw fail(403, 'This number can\'t be used right now. Please ask the cafe team.'); }
   return p;
 }
 export function safeEqual(a, b) {
   const h = v => crypto.createHash('sha256').update(String(v)).digest();
   return crypto.timingSafeEqual(h(a), h(b));
 }
-export function adminOk(req) {
-  const pin = req.headers['x-admin-pin'], want = process.env.ADMIN_PIN;
-  return typeof pin === 'string' && !!want && safeEqual(pin, want);
+// Admin PINs are stored as salted scrypt hashes. A PIN is never saved or logged.
+export function hashPin(pin) { const salt = crypto.randomBytes(16); return 's1:' + salt.toString('hex') + ':' + crypto.scryptSync(String(pin), salt, 32).toString('hex'); }
+export function verifyPin(pin, stored) {
+  try { const [v, salt, h] = String(stored).split(':'); if (v !== 's1') return false; return crypto.timingSafeEqual(crypto.scryptSync(String(pin), Buffer.from(salt, 'hex'), 32), Buffer.from(h, 'hex')); }
+  catch (e) { return false; }
 }
-// Every admin request goes through here: PIN check, brute-force lockout, audit log.
-// 5 wrong PINs from one address, or 50 from anywhere, in 15 minutes locks admin (even for the right PIN) until the window passes.
+const DUMMY_HASH = hashPin(crypto.randomBytes(12).toString('hex'));   // so an unknown username takes as long as a wrong PIN
+export const MIN_PIN = 8;
+export const randomPin = () => { let p = ''; const b = crypto.randomBytes(MIN_PIN); for (let i = 0; i < MIN_PIN; i++) p += String(b[i] % 10); return p; };
+// Every admin request goes through here: named login, brute-force lockout, audit log. Returns { ip, user: { username, role, name } }.
+// 5 wrong tries from one address, 5 against one username, or 50 from anywhere, in 15 minutes locks that door (even for the right PIN).
 export async function adminGate(req) {
-  const ip = getIp(req);
-  if ((process.env.ADMIN_PIN || '').length < 8) throw fail(503, 'admin is off: set ADMIN_PIN to at least 8 characters');
-  const [c] = await sql`SELECT count(*) FILTER (WHERE ip = ${ip})::int AS mine, count(*)::int AS total FROM security_events
-                        WHERE kind = 'admin_login_fail' AND at > now() - interval '15 minutes'`;
-  if (c.mine >= LIMITS.adminPerIp || c.total >= LIMITS.adminGlobal) {
-    await logEvent('admin_locked', ip, null, { mine: c.mine, total: c.total }, 60);
-    throw fail(429, 'Too many wrong PINs. Admin is locked for 15 minutes.');
+  const ip = getIp(req), h = req.headers || {};
+  const username = typeof h['x-admin-user'] === 'string' ? h['x-admin-user'].trim().toLowerCase().slice(0, 30) : '';
+  const pin = typeof h['x-admin-pin'] === 'string' ? h['x-admin-pin'] : '';
+  const [c] = await sql`SELECT count(*) FILTER (WHERE ip = ${ip})::int AS mine, count(*)::int AS total,
+                               count(*) FILTER (WHERE ${username} <> '' AND detail->>'user' = ${username})::int AS by_user
+                        FROM security_events WHERE kind = 'admin_login_fail' AND at > now() - interval '15 minutes'`;
+  if (c.mine >= LIMITS.adminPerIp || c.by_user >= LIMITS.adminPerIp || c.total >= LIMITS.adminGlobal) {
+    await logEvent('admin_locked', ip, null, { user: username, mine: c.mine, by_user: c.by_user, total: c.total }, 60);
+    throw fail(429, 'Please try again later.');
   }
-  if (!adminOk(req)) {
-    await logEvent('admin_login_fail', ip, null, { ua: String(req.headers['user-agent'] || '').slice(0, 120) });
-    if (c.mine + 1 === LIMITS.adminPerIp) await alert('Admin locked: ' + LIMITS.adminPerIp + ' wrong PINs from ' + ip);
-    throw fail(401, 'wrong PIN');
+  const [u] = username ? await sql`SELECT username, display_name, role, pin_hash, disabled_at, last_login_at,
+                                          (last_login_at IS NULL OR last_login_at < now() - interval '10 minutes') AS stale FROM admin_users WHERE username = ${username}` : [];
+  const good = verifyPin(pin, u ? u.pin_hash : DUMMY_HASH) && !!u && !u.disabled_at && pin.length > 0;
+  if (!good) {
+    await logEvent('admin_login_fail', ip, null, { user: username, known: !!u, disabled: !!(u && u.disabled_at), ua: String(h['user-agent'] || '').slice(0, 120) });
+    if (c.mine + 1 === LIMITS.adminPerIp || c.by_user + 1 === LIMITS.adminPerIp) await alert('Admin sign-in locked: ' + LIMITS.adminPerIp + ' wrong tries for "' + username + '" / from ' + ip);
+    throw fail(401, 'wrong username or PIN');
   }
-  await logEvent('admin_login_ok', ip, null, {}, 1800);
-  return ip;
+  if (u.stale) await sql`UPDATE admin_users SET last_login_at = now() WHERE username = ${u.username}`;
+  await logEvent('admin_login_ok', ip, null, { user: u.username }, 1800);
+  return { ip, user: { username: u.username, role: u.role, name: u.display_name } };
 }
 
 // Returns a reason string when a run looks impossible, otherwise null.
@@ -183,7 +197,7 @@ export async function stats() {
   const record = r.record || 0, claimed = r.claimed || {};
   return {
     tiers: cfg.tiers.map((t, i) => ({ ...t, claimed: claimed[i] || 0 })),
-    grand: { ...cfg.grand, awarded: r.grand_awarded }, daily: cfg.daily, sceneLen: cfg.sceneLen, safeZone: cfg.safeZone,
+    grand: { ...cfg.grand, awarded: r.grand_awarded }, daily: cfg.daily, sceneLen: cfg.sceneLen, safeZone: cfg.safeZone, validUntil: cfg.validUntil || null,
     best: r.best_id != null ? { id: Number(r.best_id), points: r.best_points, name: r.best_name } : null,
     record,
     leader: cfg.daily.on && r.top_points != null && r.top_points > record ? { id: Number(r.top_id), points: r.top_points, name: r.top_name } : null,

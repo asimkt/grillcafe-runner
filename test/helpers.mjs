@@ -8,11 +8,11 @@ if (!url) throw new Error('Set TEST_DATABASE_URL to a throwaway database (a Neon
 const host = new URL(url).host;
 if (process.env.CONFIRM_TEST_DB_HOST !== host) throw new Error(`Refusing to run: set CONFIRM_TEST_DB_HOST=${host} to confirm this database may be wiped.`);
 process.env.DATABASE_URL = url;
-process.env.ADMIN_PIN = 'test-pin-12345678';
 process.env.CRON_SECRET = 'test-cron-secret';
 delete process.env.ALERT_WEBHOOK_URL;
 
-export const PIN = process.env.ADMIN_PIN, CRON = process.env.CRON_SECRET;
+export const OWNER = { user: 'asim', pin: 'owner-pin-12345' }, MANAGER = { user: 'mgr', pin: 'manager-pin-12345' };
+export const PIN = OWNER.pin, CRON = process.env.CRON_SECRET;
 const lib = await import('../api/_lib.js');
 export const { sql } = lib;
 export { lib };
@@ -30,12 +30,15 @@ export async function call(name, { method = 'POST', body, headers = {}, ip = '10
   try { out.json = JSON.parse(out.text); } catch (e) { out.json = null; }
   return out;
 }
-export const admin = (body, o = {}) => call('admin', { method: body ? 'POST' : 'GET', body, headers: { 'x-admin-pin': PIN, ...(o.headers || {}) }, ip: o.ip || '10.9.9.9' });
+export const login = who => ({ 'x-admin-user': who.user, 'x-admin-pin': who.pin });
+export const admin = (body, o = {}) => call('admin', { method: body ? 'POST' : 'GET', body, headers: { ...login(o.as || OWNER), ...(o.headers || {}) }, ip: o.ip || '10.9.9.9' });
 
 export async function resetDb() {
   assert.equal(new URL(process.env.DATABASE_URL).host, host);
   await sql`TRUNCATE security_events, runs, sessions, coupons, daily_awards, players CASCADE`;
   await sql`DELETE FROM config`;
+  await sql`DELETE FROM admin_users`;
+  await sql`INSERT INTO admin_users (username, display_name, role, pin_hash) VALUES ('asim', 'Asim', 'owner', ${lib.hashPin(OWNER.pin)}), ('mgr', 'Manager', 'manager', ${lib.hashPin(MANAGER.pin)})`;
 }
 let phoneN = 0;
 export const newPhone = () => '9' + String(800000000 + (++phoneN * 7919) % 99999999).padStart(9, '0');

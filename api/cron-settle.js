@@ -1,4 +1,4 @@
-import { sql, handler, send, couponCode, getConfig, cutoffIso, safeEqual } from './_lib.js';
+import { sql, handler, send, couponCode, getConfig, cutoffIso, expiryIso, safeEqual } from './_lib.js';
 import { awardGrand } from './admin.js';
 // Runs daily at 00:05 India time (vercel.json).
 // 1. If the daily record prize is on: each finished India day's top run wins it, if it beat every earlier run.
@@ -19,7 +19,7 @@ export default handler(['GET'], async (req, res) => {
       if (top && top.points > b.best) {
         code = couponCode();
         await sql`INSERT INTO coupons (code, type, phone, value, points, expires_at)
-                  VALUES (${code}, 'record', ${top.phone}, ${cfg.daily.prize}, ${top.points}, now() + make_interval(days => ${cfg.validDays}::int))`;
+                  VALUES (${code}, 'record', ${top.phone}, ${cfg.daily.prize}, ${top.points}, ${expiryIso(cfg)}::timestamptz)`;
       } else top = null;
     }
     await sql`INSERT INTO daily_awards (day, phone, run_id, points, coupon_code)

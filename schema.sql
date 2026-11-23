@@ -77,3 +77,18 @@ CREATE TABLE IF NOT EXISTS security_events (
 CREATE INDEX IF NOT EXISTS security_events_kind_at ON security_events (kind, at DESC);
 CREATE INDEX IF NOT EXISTS security_events_ip_at   ON security_events (ip, at DESC);
 CREATE INDEX IF NOT EXISTS runs_phone_idx          ON runs (phone);
+
+-- ---- Named admin accounts (replaces the single shared ADMIN_PIN). Create them with scripts/admin-user.mjs. ----
+CREATE TABLE IF NOT EXISTS admin_users (
+  username       text PRIMARY KEY CHECK (username = lower(username) AND username ~ '^[a-z0-9._-]{2,30}$'),
+  display_name   text NOT NULL,
+  role           text NOT NULL CHECK (role IN ('owner', 'manager')),   -- owner: everything. manager: no prize settings, top-score award or user management.
+  pin_hash       text NOT NULL,                                         -- scrypt, never the PIN itself
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  pin_changed_at timestamptz NOT NULL DEFAULT now(),
+  last_login_at  timestamptz,
+  disabled_at    timestamptz
+);
+
+-- Where a player came from (table QR such as ?t=12, or a campaign source). Admin shows players per table.
+ALTER TABLE players ADD COLUMN IF NOT EXISTS ref text;
