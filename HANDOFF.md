@@ -25,6 +25,10 @@ particles, drawing, UI screens, admin, input, loop.
 - Daily record prize: a switch, **off** by default (₹1,000 when on).
 - Points: 0.5 per metre run + 5 per coin (+20 close call, +25 per 20-coin combo, +50 heart when already holding a life).
 - Super zone: the last 500 points before each prize level, the cat is invincible with coin rain; the prize is claimed on entering it.
+- A prize level the player already holds has no super zone and no stop: the run just levels up (faster, breather trees) when it passes that score. `api/run-start.js` returns `won: [tier indexes]` and the game keeps it in `wonTiers`.
+- Coins are never on the safe lane. They are arcs over low barriers, trails through slide gates, a lure ahead of autos and buses, and on bus roofs. Hearts and power-ups sit just past a barrier or gate (`hostLane` in `spawnRow`). Expect a run to take roughly twice as long to reach a given score as before the change; prize levels are editable in admin if that needs retuning.
+- A bus roof is solid ground when the cat arrives above it (super jump), `floorUnder()`. Only buses (`roof: true` in `TYPES`).
+- Super Cat: five golden letters S-U-P-E-R, only on bus roofs and only offered while a super jump is running (`letterLane` in `spawnRow`). Spelling all five gives 14 seconds of invincible coin rain with a gold cape plus 1,000 points (`SUPER_SECS`, `SUPER_BONUS`). It is not tied to any prize.
 - After each prize level: top speed 20 → 22 → 24 → 26, denser obstacles, and a breather tree at the start of every new place.
 - One extra life max; power-ups: magnet, double coins, super jump, shield.
 - Coupons valid 7 days. Coupon codes look like `GRILL-XXXX`.

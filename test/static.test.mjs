@@ -52,3 +52,19 @@ test('the game never writes player-supplied text without escaping it', () => {
 test('the public pages load nothing from third parties except Google Fonts', () => {
   for (const f of ['index.html', 'play.html']) { if (!fs.existsSync(path.join(root, f))) continue; const hosts = new Set([...read(f).matchAll(/(?:src|href)=["']https?:\/\/([^/"']+)/g)].map(m => m[1])); for (const h of hosts) assert.ok(['fonts.googleapis.com', 'fonts.gstatic.com'].includes(h), f + ' loads ' + h); }
 });
+test('game rules: coins are never on the safe lane, and hearts/power-ups sit just past a jump-or-slide obstacle', () => {
+  const t = read('play.html'), spawn = t.slice(t.indexOf('function spawnRow()'), t.indexOf('function initWorld()'));
+  assert.ok(!/coinLine\(free/.test(spawn), 'a coin line is placed on the free lane');
+  assert.match(spawn, /hostLane/); assert.match(spawn, /T\.low \? \.9/);
+  assert.match(spawn, /k: 'letter'/); assert.match(spawn, /pu\.jump >/, 'letters must only be offered while a super jump is running');
+});
+test('game rules: a bus roof is solid ground for a cat that arrives above it', () => {
+  const t = read('play.html');
+  assert.match(t, /bus:\s*\{[^}]*roof: true/); assert.match(t, /function floorUnder/); assert.match(t, /T\.roof \? P\.y >= T\.h - \.06/);
+});
+test('game rules: already-won prize levels are skipped, and spelling SUPER makes the Super Cat', () => {
+  const t = read('play.html');
+  assert.match(t, /function skipTier/); assert.match(t, /wonTiers\[ti\] && !hero && pts >= tiers\[ti\]\.points/);
+  assert.match(t, /function startSuperCat/); assert.match(t, /supLetters >= 5/);
+  assert.match(read('api/run-start.js'), /won: won\.map/);
+});

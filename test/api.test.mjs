@@ -249,6 +249,26 @@ describe('prizes', () => {
   });
 });
 
+describe('run-start tells the game which prize levels the player already holds', () => {
+  test('a new player holds none; after winning level 0 it is listed (so the game can skip that super zone)', async () => {
+    await setCampaign(lowBar(5));
+    const p = await signUp('Winner');
+    const first = await call('run-start', { body: { phone: p.phone, token: p.token }, ip: p.ip });
+    assert.deepEqual(first.json.won, []);
+    await sql`UPDATE sessions SET started_at = now() - interval '10 seconds' WHERE id = ${first.json.sessionId}`;
+    assert.equal((await claim(p, first.json.sessionId)).json.won, true);
+    const second = await call('run-start', { body: { phone: p.phone, token: p.token }, ip: p.ip });
+    assert.deepEqual(second.json.won, [0]);
+  });
+  test('it only ever reports the caller’s own prizes', async () => {
+    await setCampaign(lowBar(5));
+    const a = await signUp('Alice'), b = await signUp('Bobby');
+    const sa = await startRun(a, 10); assert.equal((await claim(a, sa)).json.won, true);
+    const rb = await call('run-start', { body: { phone: b.phone, token: b.token }, ip: b.ip });
+    assert.deepEqual(rb.json.won, []);
+  });
+});
+
 describe('admin: access control', () => {
   const get = (headers, ip) => call('admin', { method: 'GET', headers, ip });
   test('no login, wrong PIN, wrong username and odd headers are all refused with the same message', async () => {
