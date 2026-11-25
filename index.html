@@ -231,7 +231,7 @@ footer b{color:var(--gold)}
     </div>
     <ol class="board" id="board" aria-live="polite"></ol>
     <p class="beat" id="beat"></p>
-    <p class="live"><span id="liveTxt">Refreshes every 30 minutes.</span></p>
+    <p class="live"><span id="liveTxt">Updates as people play.</span></p>
     <p style="margin-top:22px"><a class="btn" href="/play" data-play>Beat the top score →</a></p>
   </div>
 </section>
@@ -306,13 +306,13 @@ tick(); setInterval(tick, 1000);
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 
 /* prizes */
-const FALLBACK = [{ points: 10000, slots: 20, prize: 'Free shawarma', claimed: 0 }, { points: 20000, slots: 10, prize: '₹200 off', claimed: 0 }, { points: 30000, slots: 5, prize: '₹500 off', claimed: 0 }];
+const FALLBACK = [{ points: 10000, slots: 20, prize: 'Free shawarma' }, { points: 20000, slots: 10, prize: '₹200 off' }, { points: 30000, slots: 5, prize: '₹500 off' }];
 function drawPrizes(tiers) {
   const box = $('ladder'); box.replaceChildren();
   tiers.forEach(t => {
-    const left = Math.max(0, t.slots - (t.claimed || 0)), c = el('div', 'card prize');
+    const known = t.claimed != null, left = Math.max(0, t.slots - (t.claimed || 0)), c = el('div', 'card prize');
     const pts = el('div', 'pts', fmt(t.points)); pts.appendChild(el('small', null, 'POINTS'));
-    c.append(pts, el('div', 'what', t.prize), el('span', 'left' + (left === 0 ? ' out' : left <= 3 ? ' low' : ''), left === 0 ? 'All claimed' : left + ' of ' + t.slots + ' left'));
+    c.append(pts, el('div', 'what', t.prize), el('span', 'left' + (known && left === 0 ? ' out' : known && left <= 3 ? ' low' : ''), !known ? t.slots + ' winners' : left === 0 ? 'All claimed' : left + ' of ' + t.slots + ' left'));
     box.appendChild(c);
   });
 }
@@ -331,27 +331,30 @@ function applyStats(s) {
 }
 
 /* leaderboard */
-let tab = 'daily', data = null, failed = false;
+let tab = 'daily', data = null, failed = false, loading = false;
 const medal = ['🥇', '🥈', '🥉'];
 function drawBoard() {
   const list = $('board'); list.replaceChildren();
   const rows = data ? data[tab] : null;
-  if (!rows) { list.className = 'board empty'; list.appendChild(el('li', null, failed ? 'Couldn’t load the board. Retrying…' : 'Loading…')); }
+  if (!rows) { list.className = 'board empty'; const li = el('li'), b = el('button', 'btn', loading ? 'Loading…' : failed ? 'Couldn’t load. Tap to retry' : 'Show the live leaderboard'); b.id = 'showBoard'; li.appendChild(b); list.appendChild(li); }
   else if (!rows.length) { list.className = 'board empty'; list.appendChild(el('li', null, tab === 'daily' ? 'Nobody has run today yet. Go first, take #1. 👀' : 'No scores yet. The crown is empty. 👑')); }
   else { list.className = 'board'; rows.slice(0, 10).forEach(r => { const li = el('li'); li.append(el('span', 'rk', medal[r.rank - 1] || String(r.rank)), el('span', 'nm', r.name), el('span', 'pt', fmt(r.points))); list.appendChild(li); }); }
   const top = data && data.overall && data.overall[0];
   $('beat').textContent = top ? 'Score to beat: ' + fmt(top.points) + ' by ' + top.name + '.' : '';
-  $('liveTxt').textContent = failed && data ? 'Offline. Showing the last update.' : 'Refreshes every 30 minutes.';
+  $('liveTxt').textContent = failed && data ? 'Offline. Showing the last update.' : 'Updates as people play.';
 }
 async function load() {
+  if (loading) return; loading = true; drawBoard();
+  fetch('/api/stats?public=1').then(r => r.ok ? r.json() : null).then(applyStats).catch(() => {});
   try { const r = await fetch('/api/leaderboard'); if (!r.ok) throw 0; data = await r.json(); failed = false; if (data.closesAt) { closeAt = new Date(data.closesAt).getTime(); } } catch (e) { failed = true; }
-  drawBoard();
+  loading = false; drawBoard();
 }
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => {
   tab = b.dataset.tab; document.querySelectorAll('.tabs button').forEach(x => x.setAttribute('aria-selected', String(x === b))); drawBoard();
 }));
-drawBoard(); load(); setInterval(() => { if (!document.hidden) load(); }, 30 * 60 * 1000);
-fetch('/api/stats?public=1').then(r => r.ok ? r.json() : null).then(applyStats).catch(() => {});
+// Nothing here talks to the server until the visitor taps the button, so a page view never wakes the database.
+$('board').addEventListener('click', e => { if (e.target.id === 'showBoard') load(); });
+drawBoard();
 
 /* share */
 $('share').addEventListener('click', async () => {

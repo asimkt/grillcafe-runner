@@ -2,7 +2,11 @@
   "crons": [
     {
       "path": "/api/cron-settle",
-      "schedule": "35 18 * * *"
+      "schedule": "35 18 31 12 *"
+    },
+    {
+      "path": "/api/cron-settle",
+      "schedule": "35 18 1 1 *"
     }
   ],
   "headers": [

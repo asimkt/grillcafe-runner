@@ -1211,8 +1211,18 @@ function applyScene(k) {
 
 /* ================= run lifecycle ================= */
 function summary() { return { points: Math.floor(pts), coins, metres: Math.floor(dist - startDist), secs: Math.round(elapsed), livesUsed, powerups: puTaken, events: events.slice(-1500) }; }
+let statsLoading = false;
 function start() {
   if (!ME) { showMenu(); return; }
+  // First run of this visit: fetch the live prize numbers now (a player action), never on page load, so a bare visit doesn't wake the database.
+  if (!lastStats && CONFIG.backend === 'server') {
+    if (statsLoading) return; statsLoading = true;
+    api.stats().then(s => { lastStats = s; }).catch(() => {}).then(() => { statsLoading = false; begin(); });
+    return;
+  }
+  begin();
+}
+function begin() {
   auInit();
   applyLimits(lastStats);
   bestToBeat = lastStats && lastStats.best ? lastStats.best.points : 0;
@@ -1777,7 +1787,7 @@ async function refreshStats() {
 function prizeList(st) {
   return '<div class="tiers">' + tiers.map(tr => {
     const left = st ? Math.max(0, tr.slots - (tr.claimed || 0)) : null;
-    return '<div><b>' + fmt(tr.points) + '</b><span>' + esc(tr.prize) + '</span><em>' + (left == null ? '…' : left ? left + ' of ' + tr.slots + ' left' : 'All claimed') + '</em></div>';
+    return '<div><b>' + fmt(tr.points) + '</b><span>' + esc(tr.prize) + '</span><em>' + (left == null ? tr.slots + ' winners' : left ? left + ' of ' + tr.slots + ' left' : 'All claimed') + '</em></div>';
   }).join('') + '</div>';
 }
 function showMenu() {
@@ -2139,7 +2149,6 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && AU.
 resize();
 initWorld();
 showMenu();
-refreshStats();
 route();
 let last = performance.now();
 function frame(now) {

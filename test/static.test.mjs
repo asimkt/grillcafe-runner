@@ -68,3 +68,16 @@ test('game rules: already-won prize levels are skipped, and spelling SUPER makes
   assert.match(t, /function startSuperCat/); assert.match(t, /supLetters >= 5/);
   assert.match(read('api/run-start.js'), /won: won\.map/);
 });
+test('opening a page never calls the API: the database only wakes when a visitor acts', () => {
+  const land = read('index.html'), game = read('play.html');
+  assert.ok(!/^drawBoard\(\); load\(\)/m.test(land) && !/^load\(\);/m.test(land), 'landing page loads the board when opened');
+  assert.match(land, /e\.target\.id === 'showBoard'\) load\(\)/, 'the leaderboard should load on a tap');
+  assert.ok(!/^fetch\('\/api/m.test(land), 'landing page fetches at top level');
+  assert.ok(!/^refreshStats\(\);/m.test(game), 'game fetches stats when the page opens');
+  assert.match(game, /function start\(\)[\s\S]*?api\.stats\(\)/, 'the game should fetch stats on the first run instead');
+});
+test('the scheduled job runs only around the campaign end, not every day', () => {
+  const crons = JSON.parse(read('vercel.json')).crons;
+  assert.ok(crons.length <= 3);
+  for (const c of crons) { const [, , dom, mon] = c.schedule.split(' '); assert.ok(dom !== '*' && mon !== '*', 'cron ' + c.schedule + ' runs too often'); }
+});

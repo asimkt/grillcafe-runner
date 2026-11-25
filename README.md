@@ -29,7 +29,7 @@ The game reads `window.GRILL_CONFIG` before it starts:
 | `POST /api/run-finish` | Saves the run, flags impossible ones, says whether the player leads today |
 | `POST /api/me-coupons` | The player's own coupons (needs the device token) |
 | `GET/POST /api/admin` | Admin overview and actions; needs the `x-admin-pin` header |
-| `GET /api/cron-settle` | Daily at 00:05 India time: daily record prize (if switched on) and, after the end date, the top score prize |
+| `GET /api/cron-settle` | Runs only on 1 Jan 00:05 India time (and once more a day later as a retry): settles any unsettled daily record prizes (if switched on) and the top score prize. Not daily, so Neon can sleep |
 
 ## Fair-play checks (in `api/_lib.js`)
 - Every run is timed by the server from `run-start`.
@@ -48,9 +48,11 @@ The game reads `window.GRILL_CONFIG` before it starts:
 - Neon project `grillcafe` (Singapore). Branch `test` is a throwaway copy used only by the tests. Compute scales to zero after 5 idle minutes.
 - Vercel env vars (Production): `DATABASE_URL`, `CRON_SECRET`. Optional: `ALERT_WEBHOOK_URL` (a Slack incoming webhook) to be told about attacks as they happen. There is no shared admin PIN any more.
 
-## Keeping Neon asleep
-- Marketing page: leaderboard and prize counts come from the Vercel edge cache (30 minutes) and refresh every 30 minutes (`/api/leaderboard`, `/api/stats?public=1`).
-- Game: the leaderboard loads once when a player opens it (`?live=1`, cached 60 seconds). Nothing polls in the background. A test checks that no page polls faster than every 30 minutes.
+## Keeping Neon asleep (and cheap)
+- Compute is the smallest size, 0.25 CU (min and max), on both branches, and scales to zero after 5 idle minutes (the shortest this plan allows).
+- A page view never calls the database. The landing page shows prize levels from its own text and loads the leaderboard and prize counts only when the visitor taps "Show the live leaderboard" (`/api/leaderboard`, `/api/stats?public=1`, edge-cached 30 minutes). The game fetches stats on the player's first run, not when it opens. A test checks both.
+- Nothing polls in the background (a test checks that no page polls faster than every 30 minutes).
+- The scheduled job runs only at the campaign end (31 Dec 18:35 UTC = 1 Jan 00:05 India, plus a retry a day later). If the daily record prize is switched on, those prizes are issued then, not each night. If the end date changes in admin, change the schedule in `vercel.json` too, or use the award button in admin.
 
 ## Top-score race
 Closes on `grand.endsAt` at `grand.endsHour` India time (default 9 PM). Runs after that still earn level prizes but not the top-score prize, and the overall leaderboard freezes. The daily job issues the prize after that moment (00:05 on the next day), so the winner collects from 1 January.

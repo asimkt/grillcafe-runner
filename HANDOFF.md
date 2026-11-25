@@ -12,7 +12,7 @@ It must run smoothly on old iPhones (8 / SE), with extra effects on newer phones
 - `index.html`: the whole game, set to **server mode** (`window.GRILL_CONFIG = { backend: "server" }` near the top).
 - `game-test-mode.html`: the same game in **mock mode** (all data in the browser, sample players). Open it directly to play; admin at `#admin`, PIN `2026`.
 - `api/`: Vercel functions using Neon Postgres. `_lib.js` has shared helpers, the campaign rules (`cleanCampaign`) and fair-play checks (`judgeRun`).
-- `schema.sql`, `vercel.json` (daily cron), `package.json`, `README.md` (deploy steps).
+- `schema.sql`, `vercel.json` (cron only at the campaign end), `package.json`, `README.md` (deploy steps).
 
 The game is one self-contained HTML file (inline CSS/JS, canvas 2D, Web Audio, no images or libraries). Edit it directly.
 Main sections inside the script, in order: CONFIG, campaign rules, mock backend, server backend, scenes (LIGHTS, PLACES),
@@ -21,7 +21,8 @@ particles, drawing, UI screens, admin, input, loop.
 
 ## Current rules (all editable in admin, stored as one JSON row `config.campaign`)
 - Prize levels: 10,000 points = Free shawarma (20 winners), 20,000 = ₹200 off (10), 30,000 = ₹500 off (5). One per phone per level.
-- Top score when the campaign ends = ₹2,000 off (auto-awarded by the cron after the end date, or by a button in admin).
+- Top score when the campaign ends = ₹2,000 off (auto-awarded by the cron on 1 Jan 00:05 IST, retried on 2 Jan, or by a button in admin). If the end date changes, move the cron dates in `vercel.json`.
+- Neon cost: 0.25 CU compute, scale to zero after 5 minutes, and no page view touches the database (landing leaderboard loads on a tap, game stats on the first run). Keep it that way.
 - Daily record prize: a switch, **off** by default (₹1,000 when on).
 - Points: 0.5 per metre run + 5 per coin (+20 close call, +25 per 20-coin combo, +50 heart when already holding a life).
 - Super zone: the last 500 points before each prize level, the cat is invincible with coin rain; the prize is claimed on entering it.
